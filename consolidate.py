@@ -2,19 +2,19 @@
 Portfolio Tracker - Transaction Consolidation Script
 
 Reads transaction documents from multiple brokerages, normalizes them
-into a unified schema, and outputs a single portfolio.json with
-deduplication logic that handles incremental updates.
+into a unified schema, and writes them to a SQLite database with
+dynamic symbol normalization and deduplication.
 
 Usage:
     python consolidate.py
-    python consolidate.py --documents-dir path/to/docs --output path/to/output.json
+    python consolidate.py --documents-dir path/to/docs --db path/to/portfolio.db
 """
 
 import argparse
 import hashlib
-import json
 import math
-from dataclasses import asdict, dataclass, field
+import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -24,14 +24,24 @@ import pandas as pd
 from config import (
     ACCOUNT_TYPE_MAP,
     BROKERAGE_MAP,
-    DEFAULT_CURRENCY,
+    CDR_EXCHANGE,
+    DB_PATH,
     DOCUMENTS_DIR,
-    HASH_FIELDS,
-    OUTPUT_FILE,
     QUANTITY_PRECISION,
-    SCHEMA_VERSION,
     TYPE_MAPS,
 )
+from database import (
+    get_connection,
+    get_or_create_account,
+    get_or_create_brokerage,
+    get_or_create_security,
+    init_db,
+    insert_transaction,
+    set_schema_version,
+    transaction_exists,
+    update_security_name,
+)
+from refresh_holdings import refresh_holdings
 
 
 @dataclass
@@ -52,45 +62,40 @@ class Transaction:
     net_amount: float
     currency: str
     description: str
-    raw_data: dict = field(default_factory=dict)
 
 
 def generate_id(txn: Transaction) -> str:
-    """Generate a unique hash ID for a transaction based on key fields."""
-    # Round quantity to avoid floating point precision issues
-    quantity_rounded = round(txn.quantity, QUANTITY_PRECISION)
+    """Generate a unique hash ID for a transaction based on key fields.
 
-    # Build hash string from key fields
+    settlement_date is included because Disnat nodate transactions
+    (dividends, taxes) share identical date/symbol/quantity but differ
+    in settlement date — omitting it caused silent deduplication.
+    """
+    quantity_rounded = round(txn.quantity, QUANTITY_PRECISION)
     hash_string = (
         f"{txn.brokerage}"
         f"{txn.account_type}"
         f"{txn.date}"
+        f"{txn.settlement_date}"
         f"{txn.symbol}"
         f"{quantity_rounded}"
         f"{txn.price}"
         f"{txn.net_amount}"
         f"{txn.type}"
     )
-
     return hashlib.sha256(hash_string.encode()).hexdigest()[:16]
 
 
 def normalize_type(brokerage: str, raw_type: str, raw_subtype: str = "") -> str:
     """Normalize brokerage-specific transaction types to unified types."""
     type_map = TYPE_MAPS.get(brokerage, {})
-
-    # Try combined type/subtype first (e.g., "TRADE/BUY")
     if raw_subtype:
         combined = f"{raw_type}/{raw_subtype}".upper()
         if combined in type_map:
             return type_map[combined]
-
-    # Try just the type
     normalized = raw_type.upper().strip()
     if normalized in type_map:
         return type_map[normalized]
-
-    # Default to "other" for unrecognized types
     return "other"
 
 
@@ -99,7 +104,6 @@ def safe_float(value, default: float = 0.0) -> float:
     if pd.isna(value) or value == "" or value == "-":
         return default
     if isinstance(value, str):
-        # Remove currency symbols and commas
         value = value.replace("$", "").replace(",", "").strip()
     try:
         return float(value)
@@ -114,75 +118,120 @@ def safe_str(value, default: str = "") -> str:
     return str(value).strip()
 
 
-def clean_raw_data(data: dict) -> dict:
-    """Clean raw_data dict to remove NaN/Inf values that are not valid JSON."""
-    cleaned = {}
-    for k, v in data.items():
-        if pd.isna(v) or (isinstance(v, float) and math.isinf(v)):
-            cleaned[k] = None
-        elif isinstance(v, dict):
-            cleaned[k] = clean_raw_data(v)
-        else:
-            cleaned[k] = v
-    return cleaned
-
-
 def parse_date(value) -> str:
     """Parse various date formats to YYYY-MM-DD string."""
     if pd.isna(value) or value == "" or value == "-":
         return ""
-
     value_str = str(value).strip()
-
-    # Try common formats
     for fmt in ["%Y-%m-%d", "%d-%b-%y", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y"]:
         try:
             return datetime.strptime(value_str, fmt).strftime("%Y-%m-%d")
         except ValueError:
             continue
-
-    # Try pandas timestamp
     try:
         return pd.Timestamp(value_str).strftime("%Y-%m-%d")
     except Exception:
         return value_str
 
 
+def normalize_symbol(raw_symbol: str) -> str:
+    """Normalize brokerage-specific symbol formats to a canonical symbol.
+
+    Rules (applied dynamically, no lookup table):
+    - Strip `.TO` suffix (Wealthsimple TSX): MDA.TO -> MDA
+    - Strip `-U` suffix (Disnat USD): FN-U -> FN
+    - Strip `-C` suffix (Disnat CAD): AEM-C -> AEM, DLR-C -> DLR
+
+    Note: Wealthsimple's `CASH` ticker is the Global X High Interest
+    Savings ETF, NOT actual cash. Actual cash balances use the
+    `CASH-{currency}` placeholders (e.g., CASH-CAD), which never appear
+    as raw symbols in source documents.
+    """
+    symbol = raw_symbol.strip()
+    if symbol.endswith(".TO"):
+        symbol = symbol[:-3]
+    elif symbol.endswith("-U"):
+        symbol = symbol[:-2]
+    elif symbol.endswith("-C"):
+        symbol = symbol[:-2]
+    return symbol
+
+
+def detect_asset_class(name: str) -> tuple[str, int]:
+    """Detect the asset class from a security name.
+
+    Returns (asset_class, is_cdr).
+    """
+    name_upper = name.upper()
+    if "CDR" in name_upper:
+        return ("cdr", 1)
+    if "ETF" in name_upper or "TRUST" in name_upper:
+        return ("etf", 0)
+    return ("stock", 0)
+
+
+def clean_security_name(name: str) -> str:
+    """Remove transfer/contribution artifacts from a security name.
+
+    Disnat embeds transfer descriptions in the security name for
+    Nobert's Gambit journals, e.g.:
+        "GLB X US DOLL CURR-A ETF - TRSF 5MBWGB1/5MBWGA3"
+        -> "GLB X US DOLL CURR-A ETF"
+    """
+    for marker in (" - TRSF ", " - CONT ", " - CONTRIBUTION"):
+        idx = name.upper().find(marker)
+        if idx > 0:
+            name = name[:idx]
+    # Remove Disnat account identifiers (e.g., 5MBWGB1/5MBWGA3)
+    name = re.sub(r"\s*5MB[A-Z0-9/]+\s*", "", name)
+    return name.strip()
+
+
+def is_valid_security_symbol(symbol: str) -> bool:
+    """Return False for placeholders like '-' or empty strings.
+
+    These come from cash-only rows (deposits, contributions) and must
+    not create securities — those transactions stay security-less
+    (security_id=NULL) so cash flow is still tracked via net_amount.
+    """
+    sym = symbol.strip()
+    return bool(sym) and sym != "-"
+
+
+def clean_raw_value(value):
+    """Clean a value for safe handling (convert NaN/Inf to None)."""
+    if pd.isna(value) or (isinstance(value, float) and math.isinf(value)):
+        return None
+    return value
+
+
 def parse_wealthsimple(filepath: Path, account_type: str) -> list[Transaction]:
     """Parse Wealthsimple CSV export files."""
     transactions = []
-
     df = pd.read_csv(filepath)
 
     for _, row in df.iterrows():
-        # Determine transaction type
         activity_type = safe_str(row.get("activity_type"))
         activity_sub_type = safe_str(row.get("activity_sub_type"))
 
-        # For MoneyMovement, determine deposit vs withdrawal based on amount
         raw_type = activity_type
         raw_subtype = activity_sub_type
         if activity_type == "MoneyMovement":
             net_cash = safe_float(row.get("net_cash_amount"))
             if net_cash < 0:
-                raw_type = "MoneyMovement"
                 raw_subtype = "WITHDRAWAL"
             else:
-                raw_type = "MoneyMovement"
-                raw_subtype = activity_sub_type  # EFT, E_TRFIN, etc.
+                raw_subtype = activity_sub_type
 
         normalized_type = normalize_type("wealthsimple", raw_type, raw_subtype)
-
-        # Get quantity - for MoneyMovement without quantity, use net_cash_amount
         quantity = safe_float(row.get("quantity"))
         net_amount = safe_float(row.get("net_cash_amount"))
 
-        # For deposits/withdrawals, quantity might be the amount
         if normalized_type in ("deposit", "withdrawal") and quantity == 0:
             quantity = abs(net_amount)
 
         txn = Transaction(
-            id="",  # Will be set after creation
+            id="",
             brokerage="wealthsimple",
             account_type=account_type,
             date=parse_date(row.get("effective_date")),
@@ -196,7 +245,6 @@ def parse_wealthsimple(filepath: Path, account_type: str) -> list[Transaction]:
             net_amount=net_amount,
             currency=safe_str(row.get("currency"), "CAD"),
             description=safe_str(row.get("description")),
-            raw_data=clean_raw_data(row.to_dict()),
         )
         txn.id = generate_id(txn)
         transactions.append(txn)
@@ -207,8 +255,6 @@ def parse_wealthsimple(filepath: Path, account_type: str) -> list[Transaction]:
 def parse_qtrade(filepath: Path, account_type: str) -> list[Transaction]:
     """Parse qtrade HTML-table .xls export files."""
     transactions = []
-
-    # qtrade files are HTML tables saved as .xls
     dfs = pd.read_html(filepath)
     if not dfs:
         return transactions
@@ -217,22 +263,13 @@ def parse_qtrade(filepath: Path, account_type: str) -> list[Transaction]:
     for _, row in df.iterrows():
         action = safe_str(row.get("Action"))
         normalized_type = normalize_type("qtrade", action)
-
-        # Parse quantity - remove NaN for non-trade transactions
         quantity = safe_float(row.get("Qty"))
-
-        # Parse price - remove $ sign
         price = safe_float(row.get("Price"))
-
-        # Parse net amount - remove $ sign and commas
         net_amount = safe_float(row.get("Net Amount"))
+        commission = safe_float(row.get("Comm."))
 
-        # For deposits, quantity might be 0 but net_amount has value
         if normalized_type == "deposit" and quantity == 0:
             quantity = abs(net_amount)
-
-        # Parse commission
-        commission = safe_float(row.get("Comm."))
 
         txn = Transaction(
             id="",
@@ -247,9 +284,8 @@ def parse_qtrade(filepath: Path, account_type: str) -> list[Transaction]:
             price=price,
             commission=commission,
             net_amount=net_amount,
-            currency="CAD",  # qtrade assumed CAD
+            currency="CAD",
             description=safe_str(row.get("Description")),
-            raw_data=clean_raw_data(row.to_dict()),
         )
         txn.id = generate_id(txn)
         transactions.append(txn)
@@ -260,23 +296,19 @@ def parse_qtrade(filepath: Path, account_type: str) -> list[Transaction]:
 def parse_disnat(filepath: Path, account_type: str) -> list[Transaction]:
     """Parse Disnat Excel export files."""
     transactions = []
-
     df = pd.read_excel(filepath)
 
     for _, row in df.iterrows():
         txn_type = safe_str(row.get("Transaction Type"))
         normalized_type = normalize_type("disnat", txn_type)
-
         quantity = safe_float(row.get("Quantity"))
         price = safe_float(row.get("Price"))
         net_amount = safe_float(row.get("Settlement Amount"))
         commission = safe_float(row.get("Commission Paid"))
 
-        # For deposits/contributions, quantity might be 0
         if normalized_type == "deposit" and quantity == 0:
             quantity = abs(net_amount)
 
-        # Get currency - prefer Price Currency, fallback to Account Currency
         currency = safe_str(row.get("Price Currency"))
         if not currency or currency == "-":
             currency = safe_str(row.get("Account Currency"), "CAD")
@@ -296,7 +328,6 @@ def parse_disnat(filepath: Path, account_type: str) -> list[Transaction]:
             net_amount=net_amount,
             currency=currency,
             description=safe_str(row.get("Description")),
-            raw_data=clean_raw_data(row.to_dict()),
         )
         txn.id = generate_id(txn)
         transactions.append(txn)
@@ -304,7 +335,6 @@ def parse_disnat(filepath: Path, account_type: str) -> list[Transaction]:
     return transactions
 
 
-# Map brokerages to their parser functions
 PARSERS = {
     "wealthsimple": parse_wealthsimple,
     "qtrade": parse_qtrade,
@@ -313,12 +343,8 @@ PARSERS = {
 
 
 def discover_files(base_dir: Path) -> list[tuple[Path, str, str]]:
-    """
-    Discover all transaction files in the documents directory.
-    Returns list of (filepath, brokerage, account_type) tuples.
-    """
+    """Discover all transaction files in the documents directory."""
     files = []
-
     if not base_dir.exists():
         print(f"Warning: Documents directory not found: {base_dir}")
         return files
@@ -326,29 +352,22 @@ def discover_files(base_dir: Path) -> list[tuple[Path, str, str]]:
     for brokerage_dir in base_dir.iterdir():
         if not brokerage_dir.is_dir():
             continue
-
         brokerage_name = brokerage_dir.name.lower()
         if brokerage_name not in BROKERAGE_MAP:
             print(f"Warning: Unknown brokerage folder: {brokerage_name}")
             continue
-
         brokerage = BROKERAGE_MAP[brokerage_name]
 
         for item in brokerage_dir.rglob("*"):
             if not item.is_file():
                 continue
-
-            # Determine account type from parent folder
             account_type = "unknown"
             parent_name = item.parent.name.lower()
             if parent_name in ACCOUNT_TYPE_MAP:
                 account_type = ACCOUNT_TYPE_MAP[parent_name]
             elif brokerage_dir == item.parent:
-                # File is directly in brokerage folder
-                # Try to infer from filename or default
                 account_type = "general"
 
-            # Check file extension
             suffix = item.suffix.lower()
             if suffix in (".csv", ".xls", ".xlsx"):
                 files.append((item, brokerage, account_type))
@@ -356,73 +375,9 @@ def discover_files(base_dir: Path) -> list[tuple[Path, str, str]]:
     return files
 
 
-def load_existing(filepath: Path) -> dict:
-    """Load existing portfolio.json or return empty structure."""
-    if not filepath.exists():
-        return {
-            "metadata": {
-                "schema_version": SCHEMA_VERSION,
-                "last_updated": "",
-                "total_transactions": 0,
-                "brokerages": [],
-            },
-            "transactions": [],
-        }
-
-    with open(filepath, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-class NaNSafeEncoder(json.JSONEncoder):
-    """Custom JSON encoder that converts NaN/Inf to null."""
-
-    def default(self, o):
-        if isinstance(o, float) and (math.isnan(o) or math.isinf(o)):
-            return None
-        return super().default(o)
-
-    def encode(self, o):
-        return super().encode(self._clean(o))
-
-    def _clean(self, o):
-        if isinstance(o, float) and (math.isnan(o) or math.isinf(o)):
-            return None
-        if isinstance(o, dict):
-            return {k: self._clean(v) for k, v in o.items()}
-        if isinstance(o, list):
-            return [self._clean(v) for v in o]
-        return o
-
-
-def merge_transactions(existing: dict, new_transactions: list[Transaction]) -> dict:
-    """Merge new transactions into existing portfolio, avoiding duplicates."""
-    # Build set of existing transaction IDs
-    existing_ids = {txn["id"] for txn in existing.get("transactions", [])}
-
-    # Add only new transactions
-    added_count = 0
-    for txn in new_transactions:
-        if txn.id not in existing_ids:
-            existing["transactions"].append(asdict(txn))
-            existing_ids.add(txn.id)
-            added_count += 1
-
-    # Update metadata
-    existing["metadata"]["last_updated"] = datetime.now().isoformat()
-    existing["metadata"]["total_transactions"] = len(existing["transactions"])
-
-    # Collect unique brokerages
-    brokerages = sorted(set(txn["brokerage"] for txn in existing["transactions"]))
-    existing["metadata"]["brokerages"] = brokerages
-
-    return existing, added_count
-
-
-def consolidate(documents_dir: Path, output_path: Path) -> None:
+def consolidate(documents_dir: Path, db_path: Path) -> None:
     """Main consolidation function."""
     print(f"Scanning for transaction documents in: {documents_dir}")
-
-    # Discover all files
     files = discover_files(documents_dir)
     print(f"Found {len(files)} transaction file(s)")
 
@@ -437,7 +392,6 @@ def consolidate(documents_dir: Path, output_path: Path) -> None:
         if not parser:
             print(f"Warning: No parser for brokerage '{brokerage}', skipping {filepath}")
             continue
-
         print(f"  Parsing: {filepath} ({brokerage}/{account_type})")
         try:
             transactions = parser(filepath, account_type)
@@ -448,25 +402,132 @@ def consolidate(documents_dir: Path, output_path: Path) -> None:
 
     print(f"\nTotal transactions parsed: {len(all_transactions)}")
 
-    # Load existing portfolio
-    existing = load_existing(output_path)
-    print(f"Existing transactions in portfolio: {existing['metadata']['total_transactions']}")
+    # Initialize database
+    print(f"Initializing database: {db_path}")
+    init_db(db_path)
 
-    # Merge
-    merged, added_count = merge_transactions(existing, all_transactions)
-    print(f"New transactions added: {added_count}")
-    print(f"Total transactions now: {merged['metadata']['total_transactions']}")
+    conn = get_connection(db_path)
+    try:
+        # Insert brokerages
+        brokerage_ids = {}
+        for brokerage in BROKERAGE_MAP.values():
+            brokerage_ids[brokerage] = get_or_create_brokerage(conn, brokerage)
 
-    # Write output
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(merged, f, indent=2, cls=NaNSafeEncoder)
+        # Insert accounts
+        account_cache = {}
+        for txn in all_transactions:
+            key = (txn.brokerage, txn.account_type)
+            if key not in account_cache:
+                account_cache[key] = get_or_create_account(
+                    conn,
+                    brokerage_ids[txn.brokerage],
+                    txn.account_type,
+                )
 
-    print(f"\nPortfolio saved to: {output_path}")
+        # Insert securities (dynamic: no lookup table)
+        security_cache = {}
+        for txn in all_transactions:
+            raw_symbol = txn.symbol
+            if not is_valid_security_symbol(raw_symbol):
+                continue
+            canonical_symbol = normalize_symbol(raw_symbol)
+            key = (canonical_symbol, txn.currency)
+            if key in security_cache:
+                # Prefer the shortest/cleanest name across variants
+                # (e.g., DLR-C's clean name over DLR's transfer-suffixed one)
+                cleaned = clean_security_name(txn.name or canonical_symbol)
+                update_security_name(conn, security_cache[key], cleaned)
+                continue
+
+            cleaned_name = clean_security_name(txn.name or canonical_symbol)
+            # Note: Wealthsimple's CASH ticker is the Global X High Interest
+            # Savings ETF, which detect_asset_class() correctly classifies
+            # as "etf" from its name. Actual cash uses the CASH-{currency}
+            # placeholders, created separately below with asset_class="cash".
+            asset_class, is_cdr = detect_asset_class(cleaned_name)
+            exchange = CDR_EXCHANGE if is_cdr else None
+            is_cash = 0
+
+            security_cache[key] = get_or_create_security(
+                conn,
+                canonical_symbol,
+                txn.currency,
+                name=cleaned_name,
+                asset_class=asset_class,
+                exchange=exchange,
+                is_cdr=is_cdr,
+                is_cash=is_cash,
+            )
+
+        # Ensure cash securities exist (before transactions so deposits resolve)
+        for currency in ("CAD", "USD"):
+            security_cache[(f"CASH-{currency}", currency)] = get_or_create_security(
+                conn,
+                f"CASH-{currency}",
+                currency,
+                name=f"Cash {currency}",
+                asset_class="cash",
+                is_cash=1,
+            )
+
+        # Insert transactions with deduplication
+        added = 0
+        skipped = 0
+        for txn in all_transactions:
+            if transaction_exists(conn, txn.id):
+                skipped += 1
+                continue
+
+            account_id = account_cache[(txn.brokerage, txn.account_type)]
+            security_id = None
+            if is_valid_security_symbol(txn.symbol):
+                canonical_symbol = normalize_symbol(txn.symbol)
+                security_id = security_cache.get((canonical_symbol, txn.currency))
+            elif txn.type in ("deposit", "withdrawal"):
+                # Assign cash security for cash-only transactions
+                cash_symbol = f"CASH-{txn.currency}"
+                security_id = security_cache.get((cash_symbol, txn.currency))
+
+            insert_transaction(
+                conn,
+                transaction_id=txn.id,
+                account_id=account_id,
+                security_id=security_id,
+                date=txn.date,
+                settlement_date=txn.settlement_date,
+                txn_type=txn.type,
+                quantity=txn.quantity,
+                price=txn.price,
+                commission=txn.commission,
+                net_amount=txn.net_amount,
+                currency=txn.currency,
+                description=txn.description,
+            )
+            added += 1
+
+        conn.commit()
+        print(f"\nTransactions added: {added}")
+        print(f"Transactions skipped (duplicates): {skipped}")
+
+        # Refresh holdings
+        print("Refreshing holdings...")
+        result = refresh_holdings(db_path)
+        print(f"  Cash holdings: {result['cash_holdings']}")
+        print(f"  Security holdings: {result['security_holdings']}")
+
+        # Set schema version
+        from config import SCHEMA_VERSION
+        set_schema_version(SCHEMA_VERSION, db_path)
+
+    finally:
+        conn.close()
+
+    print(f"\nPortfolio database updated: {db_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Consolidate transaction documents into a single portfolio JSON."
+        description="Consolidate transaction documents into the portfolio database."
     )
     parser.add_argument(
         "--documents-dir",
@@ -475,14 +536,14 @@ def main():
         help="Path to transaction documents directory",
     )
     parser.add_argument(
-        "--output",
+        "--db",
         type=Path,
-        default=OUTPUT_FILE,
-        help="Path to output portfolio.json",
+        default=DB_PATH,
+        help="Path to SQLite database",
     )
 
     args = parser.parse_args()
-    consolidate(args.documents_dir, args.output)
+    consolidate(args.documents_dir, args.db)
 
 
 if __name__ == "__main__":

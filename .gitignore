@@ -19,6 +19,8 @@ env/
 # Personal financial data - DO NOT COMMIT
 transaction documents/
 portfolio.json
+portfolio.db
+portfolio.html
 
 # IDE
 .vscode/

@@ -1,17 +1,20 @@
 """
-Configuration for Portfolio Tracker consolidation script.
-Contains constants, type mappings, and schema definitions.
+Configuration for Portfolio Tracker.
+Contains constants, type mappings, and database path.
+
+Symbol normalization is handled dynamically in consolidate.py
+(see normalize_symbol, detect_asset_class, clean_security_name).
 """
 
 from pathlib import Path
 
 # Schema version for future migrations
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.2.0"
 
 # Base directories
 BASE_DIR = Path(__file__).parent
 DOCUMENTS_DIR = BASE_DIR / "transaction documents"
-OUTPUT_FILE = BASE_DIR / "portfolio.json"
+DB_PATH = BASE_DIR / "portfolio.db"
 
 # Brokerage folder name -> normalized identifier
 BROKERAGE_MAP = {
@@ -104,3 +107,6 @@ DEFAULT_CURRENCY = {
     "qtrade": "CAD",
     "disnat": "CAD",
 }
+
+# Exchange for Canadian Depositary Receipts (detected by "CDR" in name)
+CDR_EXCHANGE = "NEO"
