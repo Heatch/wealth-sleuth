@@ -9,7 +9,7 @@ Symbol normalization is handled dynamically in consolidate.py
 from pathlib import Path
 
 # Schema version for future migrations
-SCHEMA_VERSION = "1.2.0"
+SCHEMA_VERSION = "1.3.0"
 
 # Base directories
 BASE_DIR = Path(__file__).parent

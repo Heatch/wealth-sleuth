@@ -375,7 +375,9 @@ def discover_files(base_dir: Path) -> list[tuple[Path, str, str]]:
     return files
 
 
-def consolidate(documents_dir: Path, db_path: Path) -> None:
+def consolidate(
+    documents_dir: Path, db_path: Path, fetch_info: bool = False
+) -> None:
     """Main consolidation function."""
     print(f"Scanning for transaction documents in: {documents_dir}")
     files = discover_files(documents_dir)
@@ -524,6 +526,14 @@ def consolidate(documents_dir: Path, db_path: Path) -> None:
 
     print(f"\nPortfolio database updated: {db_path}")
 
+    if fetch_info:
+        print("\nFetching security info from yfinance...")
+        from fetch_security_info import update_securities
+
+        info_result = update_securities(db_path=db_path)
+        print(f"  Securities updated: {info_result['updated']}")
+        print(f"  Failed: {info_result['failed']}")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -541,9 +551,14 @@ def main():
         default=DB_PATH,
         help="Path to SQLite database",
     )
+    parser.add_argument(
+        "--fetch-info",
+        action="store_true",
+        help="Also fetch security info from yfinance (off by default)",
+    )
 
     args = parser.parse_args()
-    consolidate(args.documents_dir, args.db)
+    consolidate(args.documents_dir, args.db, fetch_info=args.fetch_info)
 
 
 if __name__ == "__main__":

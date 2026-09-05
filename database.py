@@ -42,7 +42,13 @@ CREATE TABLE IF NOT EXISTS securities (
     description TEXT,
     market_cap REAL,
     last_price REAL,
-    last_price_date TEXT
+    last_price_date TEXT,
+    trailing_pe REAL,
+    forward_pe REAL,
+    dividend_yield REAL,
+    dividend_rate REAL,
+    fifty_two_week_high REAL,
+    fifty_two_week_low REAL
 );
 
 -- Transactions
@@ -129,6 +135,37 @@ def get_schema_version(db_path: Optional[Path] = None) -> Optional[str]:
             "SELECT version FROM schema_metadata ORDER BY applied_at DESC LIMIT 1"
         ).fetchone()
         return row["version"] if row else None
+    finally:
+        conn.close()
+
+
+# New securities columns added for yfinance data (schema 1.3.0).
+# migrate_securities_schema() adds any missing columns idempotently.
+SECURITIES_EXTRA_COLUMNS = {
+    "trailing_pe": "REAL",
+    "forward_pe": "REAL",
+    "dividend_yield": "REAL",
+    "dividend_rate": "REAL",
+    "fifty_two_week_high": "REAL",
+    "fifty_two_week_low": "REAL",
+}
+
+
+def migrate_securities_schema(db_path: Optional[Path] = None) -> list[str]:
+    """Add any missing yfinance columns to securities. Returns added columns."""
+    conn = get_connection(db_path)
+    try:
+        existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(securities)").fetchall()
+        }
+        added = []
+        for column, coltype in SECURITIES_EXTRA_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE securities ADD COLUMN {column} {coltype}")
+                added.append(column)
+        conn.commit()
+        return added
     finally:
         conn.close()
 
