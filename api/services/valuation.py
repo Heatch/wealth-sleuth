@@ -53,7 +53,12 @@ def load_transactions(conn):
 
 
 def apply_txn(t, positions, cash):
-    """Apply one txn to positions/cash. Returns external flow (deposit/withdrawal net)."""
+    """Apply one txn to positions/cash. Returns external flow (deposit/withdrawal net).
+
+    All deposits/withdrawals count as external flows (they link to CASH
+    securities, not NULL). Cash-affecting `other` and `transfer` rows with
+    no security (fees, cash journals) also count. Security trades never do.
+    """
     ttype = t["type"]
     qty = t["quantity"] or 0.0
     net = t["net_amount"] or 0.0
@@ -67,9 +72,9 @@ def apply_txn(t, positions, cash):
         positions[(acct, sid)] = positions.get((acct, sid), 0.0) - abs(qty)
     elif ttype == "transfer" and sid is not None:
         positions[(acct, sid)] = positions.get((acct, sid), 0.0) + qty
-    if ttype == "deposit":
+    if ttype in ("deposit", "withdrawal"):
         return net
-    if ttype == "withdrawal":
+    if ttype in ("other", "transfer") and sid is None and net != 0:
         return net
     return 0.0
 
@@ -152,11 +157,13 @@ def daily_portfolio_values(conn, currency="CAD"):
     series = []
     flows = {}
     for d in all_dates:
+        fx_rate = get_fx_rate_on(conn, d)
         day_flow = 0.0
         for t in by_date.get(d, []):
-            day_flow += apply_txn(t, positions, cash)
+            raw_flow = apply_txn(t, positions, cash)
+            if raw_flow != 0.0:
+                day_flow += convert(raw_flow, t["currency"], currency, fx_rate)
         flows[d] = day_flow
-        fx_rate = get_fx_rate_on(conn, d)
         total = value_positions(positions, secs, price_map, price_index, d, currency, fx_rate)
         total += value_cash(cash, currency, fx_rate)
         series.append((d, total))

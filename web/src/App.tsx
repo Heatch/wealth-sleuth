@@ -1,9 +1,10 @@
 ﻿import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Moon, Sun } from "lucide-react";
 import { fetchHoldings, fetchHistory, fetchSummary } from "./api/portfolio";
 import type { Currency, HoldingSort, Period, ReturnMethod, SortOrder } from "./lib/types";
 import HoldingsTable from "./components/HoldingsTable";
-import PerformanceChart from "./components/PerformanceChart";
+import PerformanceChart, { type ZoomRange } from "./components/PerformanceChart";
 import PortfolioBalance from "./components/PortfolioBalance";
 
 export default function App() {
@@ -12,6 +13,7 @@ export default function App() {
   const [method, setMethod] = useState<ReturnMethod>("twr");
   const [sort, setSort] = useState<HoldingSort>("value");
   const [order, setOrder] = useState<SortOrder>("desc");
+  const [zoom, setZoom] = useState<ZoomRange | null>(null);
   const [dark, setDark] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     const saved = window.localStorage.getItem("pt-theme");
@@ -48,15 +50,26 @@ export default function App() {
 
   const error = summaryQ.error || historyQ.error || holdingsQ.error;
 
+  // Reset chart zoom whenever the underlying dataset changes
+  const handlePeriod = (p: Period) => {
+    setPeriod(p);
+    setZoom(null);
+  };
+  const handleCurrency = (c: Currency) => {
+    setCurrency(c);
+    setZoom(null);
+  };
+
   return (
-    <div className="mx-auto max-w-5xl px-5 py-8">
+    <div className="mx-auto max-w-7xl px-6 py-8">
       <div className="mb-6 flex justify-end">
         <button
           onClick={() => setDark(!dark)}
-          className="rounded-full px-4 py-1 text-sm"
+          aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
+          className="rounded-full p-2"
           style={{ background: "color-mix(in srgb, var(--ink) 6%, transparent)", color: "var(--ink-soft)" }}
         >
-          {dark ? "Light" : "Dark"}
+          {dark ? <Sun size={16} /> : <Moon size={16} />}
         </button>
       </div>
       {error ? (
@@ -68,13 +81,13 @@ export default function App() {
       <PortfolioBalance
         summary={summaryQ.data}
         currency={currency}
-        onCurrency={setCurrency}
+        onCurrency={handleCurrency}
         period={period}
-        onPeriod={setPeriod}
+        onPeriod={handlePeriod}
         method={method}
         onMethod={setMethod}
       />
-      <PerformanceChart history={historyQ.data} />
+      <PerformanceChart history={historyQ.data} zoom={zoom} onZoom={setZoom} />
       <HoldingsTable
         holdings={holdingsQ.data?.holdings}
         totals={holdingsQ.data?.totals}

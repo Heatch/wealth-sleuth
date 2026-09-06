@@ -1,13 +1,48 @@
 """Fetch historical daily prices from yfinance into price_history + fx_history."""
 
 import argparse
+import math
 import time
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
 from config import DB_PATH
 from database import get_connection, init_db
 from fetch_security_info import resolve_ticker
+
+
+def resolve_ticker_for_history(symbol: str, currency: str, is_cdr: int) -> list[str]:
+    """Return candidate tickers for price history, preferring reliable feeds.
+
+    CDRs: .TO first (.NE history goes stale/NaN after July 2026).
+    Others: same order as resolve_ticker().
+    """
+    cands = resolve_ticker(symbol, currency, is_cdr)
+    if is_cdr and currency != "USD":
+        # Prefer .TO for history (NEO feed has NaN closes after Jul 2026)
+        to_first = sorted(cands, key=lambda t: (0 if t.endswith(".TO") else 1, t))
+        # Deduplicate while preserving order
+        seen = set()
+        ordered = []
+        for t in to_first:
+            if t not in seen:
+                seen.add(t)
+                ordered.append(t)
+        return ordered
+    return cands
+
+
+def is_fresh_enough(df, max_age_days: int = 7) -> bool:
+    """Check if the most recent valid close is within max_age_days of today."""
+    if df is None or df.empty or "Close" not in df.columns:
+        return False
+    valid = df[df["Close"].notna()]
+    if valid.empty:
+        return False
+    latest = valid.index[-1].date()
+    today = date.today()
+    return (today - latest).days <= max_age_days
 
 
 def fetch_history(ticker: str):
@@ -18,6 +53,10 @@ def fetch_history(ticker: str):
     except Exception:
         return None
     if df is None or df.empty or "Close" not in df.columns:
+        return None
+    # Filter out NaN closes (.NE tickers return NaN after Jul 2026)
+    valid_count = int(df["Close"].notna().sum())
+    if valid_count == 0:
         return None
     return df
 
@@ -49,12 +88,13 @@ def update_price_history(
         for row in rows:
             df = None
             used_ticker = None
-            cands = resolve_ticker(row["symbol"], row["currency"], row["is_cdr"])
+            cands = resolve_ticker_for_history(row["symbol"], row["currency"], row["is_cdr"])
             for candidate in cands:
                 df = fetch_history(candidate)
-                if df is not None:
+                if df is not None and is_fresh_enough(df):
                     used_ticker = candidate
                     break
+                df = None
                 time.sleep(0.05)
 
             if df is None:
@@ -81,6 +121,8 @@ def update_price_history(
                 try:
                     close_val = float(data.get("Close"))
                 except (TypeError, ValueError):
+                    continue
+                if math.isnan(close_val) or math.isinf(close_val):
                     continue
                 if dry_run:
                     new_rows += 1
@@ -143,6 +185,8 @@ def fetch_fx_history(conn, delay=0.25, force=False, dry_run=False):
         try:
             rate = float(data.get("Close"))
         except (TypeError, ValueError):
+            continue
+        if math.isnan(rate) or math.isinf(rate):
             continue
         if dry_run:
             count += 1

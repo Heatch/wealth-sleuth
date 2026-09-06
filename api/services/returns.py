@@ -37,8 +37,8 @@ def slice_series(series: list, start: str) -> list:
 
 
 def naive_return(start_value: float, end_value: float, net_flows: float) -> Optional[float]:
-    """(end - start - net_flows) / |start + net_flows| fallback to end/start."""
-    denom = abs(start_value)
+    """Modified Dietz simple return: (end - start - flows) / |start + 0.5*flows|."""
+    denom = abs(start_value + 0.5 * net_flows)
     if denom == 0:
         return None
     return (end_value - start_value - net_flows) / denom
@@ -66,7 +66,11 @@ def twr_return(sub: list, flows: dict) -> Optional[float]:
 
 
 def mwr_return(sub: list, flows: dict) -> Optional[float]:
-    """Money-weighted return (annualized IRR) via bisection on NPV=0."""
+    """Money-weighted return (period return, de-annualized IRR) via bisection.
+
+    Solves for the annualized IRR, then converts to the cumulative period
+    return so it is directly comparable with TWR: (1+r)^(days/365) - 1.
+    """
     if len(sub) < 2:
         return None
     start_d = sub[0][0]
@@ -94,16 +98,20 @@ def mwr_return(sub: list, flows: dict) -> Optional[float]:
     f_lo, f_hi = npv(lo), npv(hi)
     if f_lo * f_hi > 0:
         return naive_return(start_v, end_v, sum(flows.get(d, 0.0) or 0.0 for d, _ in sub))
+    annualized = None
     for _ in range(200):
         mid = (lo + hi) / 2.0
         f_mid = npv(mid)
         if abs(f_mid) < 1e-9:
-            return mid
+            annualized = mid
+            break
         if f_lo * f_mid <= 0:
             hi, f_hi = mid, f_mid
         else:
             lo, f_lo = mid, f_mid
-    return (lo + hi) / 2.0
+    if annualized is None:
+        annualized = (lo + hi) / 2.0
+    return (1.0 + annualized) ** (days_total / 365.0) - 1.0
 
 
 def parse_date(s: str):

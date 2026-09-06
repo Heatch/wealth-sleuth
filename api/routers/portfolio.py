@@ -89,7 +89,7 @@ def get_holdings(
         cur = validate_currency(currency)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if sort not in ("value", "gain", "gain_pct", "book_cost", "symbol"):
+    if sort not in ("value", "gain", "gain_pct", "book_cost", "symbol", "weight"):
         raise HTTPException(status_code=400, detail="Invalid sort field")
     if order not in ("asc", "desc"):
         raise HTTPException(status_code=400, detail="Invalid order")
@@ -98,7 +98,7 @@ def get_holdings(
     fx_rate, _ = fx_service.get_latest_fx_rate(conn)
     rows = conn.execute(
         "SELECT h.quantity, h.avg_cost, h.total_cost_basis, "
-        "s.symbol, s.name, s.currency, s.asset_class, s.last_price, "
+        "s.symbol, COALESCE(s.description, s.name) AS name, s.currency, s.asset_class, s.last_price, "
         "b.name AS brokerage, a.account_type "
         "FROM holdings h "
         "JOIN accounts a ON h.account_id = a.id "
@@ -148,6 +148,7 @@ def get_holdings(
         "gain_pct": lambda h: (h.gain_pct is None, h.gain_pct or 0),
         "book_cost": lambda h: h.book_cost,
         "symbol": lambda h: h.symbol,
+        "weight": lambda h: (h.weight is None, h.weight or 0),
     }
     holdings.sort(key=key_map[sort], reverse=reverse)
 

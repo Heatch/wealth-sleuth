@@ -17,13 +17,15 @@ function fmtQty(v: number): string {
   return t === "" ? "0" : t;
 }
 
-type Col = { key: HoldingSort; label: string; numeric: boolean };
+type Col = { key: HoldingSort | "shares"; label: string; numeric: boolean; sortable: boolean };
 const COLS: Col[] = [
-  { key: "symbol", label: "Symbol", numeric: false },
-  { key: "value", label: "Value", numeric: true },
-  { key: "gain", label: "Gain", numeric: true },
-  { key: "gain_pct", label: "Gain %", numeric: true },
-  { key: "book_cost", label: "Book cost", numeric: true },
+  { key: "symbol", label: "Symbol", numeric: false, sortable: true },
+  { key: "shares", label: "Shares", numeric: true, sortable: false },
+  { key: "value", label: "Value", numeric: true, sortable: true },
+  { key: "gain", label: "Gain", numeric: true, sortable: true },
+  { key: "gain_pct", label: "Gain %", numeric: true, sortable: true },
+  { key: "book_cost", label: "Book cost", numeric: true, sortable: true },
+  { key: "weight", label: "Weight", numeric: true, sortable: true },
 ];
 
 interface Props {
@@ -48,18 +50,16 @@ export default function HoldingsTable({ holdings, totals, sort, order, onSort }:
         <thead>
           <tr style={{ borderBottom: "1px solid color-mix(in srgb, var(--ink) 12%, transparent)" }}>
             <th className="py-2 pr-3 text-left font-medium" style={{ color: "var(--ink-soft)" }}>Name</th>
-            <th className="py-2 pr-3 text-right font-medium" style={{ color: "var(--ink-soft)" }}>Shares</th>
             {COLS.map((c) => (
               <th
                 key={c.key}
-                onClick={() => onSort(c.key)}
-                className={`cursor-pointer py-2 pr-3 font-medium ${c.numeric ? "text-right" : "text-left"}`}
+                onClick={c.sortable ? () => onSort(c.key as HoldingSort) : undefined}
+                className={`${c.sortable ? "cursor-pointer" : ""} py-2 pr-3 font-medium ${c.numeric ? "text-right" : "text-left"}`}
                 style={{ color: sort === c.key ? "var(--ink)" : "var(--ink-soft)" }}
               >
-                {c.label}{sort === c.key ? (order === "desc" ? " ▼" : " ▲") : ""}
+                {c.label}{c.sortable && sort === c.key ? (order === "desc" ? " ▼" : " ▲") : ""}
               </th>
             ))}
-            <th className="py-2 text-right font-medium" style={{ color: "var(--ink-soft)" }}>Weight</th>
           </tr>
         </thead>
         <tbody>

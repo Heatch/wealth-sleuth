@@ -3,7 +3,7 @@
 export type Currency = "CAD" | "USD";
 export type Period = "1m" | "6m" | "ytd" | "1y" | "3y" | "all";
 export type ReturnMethod = "twr" | "mwr" | "naive";
-export type HoldingSort = "value" | "gain" | "gain_pct" | "book_cost" | "symbol";
+export type HoldingSort = "value" | "gain" | "gain_pct" | "book_cost" | "symbol" | "weight";
 export type SortOrder = "asc" | "desc";
 
 export interface PeriodReturns {

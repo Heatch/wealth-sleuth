@@ -19,6 +19,10 @@ from typing import Optional
 from config import DB_PATH
 from database import get_connection
 
+# Threshold below which a holding is treated as zero (floating-point dust
+# from sequential sell cost-basis reduction and SUM aggregation).
+GHOST_THRESHOLD = 1e-9
+
 
 def _get_cash_security_id(conn: sqlite3.Connection, currency: str) -> Optional[int]:
     """Get the security id for a cash placeholder symbol."""
@@ -37,7 +41,7 @@ def refresh_cash_holdings(conn: sqlite3.Connection) -> int:
         SELECT account_id, currency, SUM(net_amount) as balance
         FROM transactions
         GROUP BY account_id, currency
-        HAVING balance != 0
+        HAVING ABS(balance) > 1e-9
         """
     ).fetchall()
 
@@ -172,7 +176,7 @@ def refresh_security_holdings(conn: sqlite3.Connection) -> int:
                     avg_cost = 0.0
                     total_cost = 0.0
 
-        if quantity != 0:
+        if abs(quantity) > GHOST_THRESHOLD:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO holdings
