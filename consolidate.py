@@ -131,7 +131,26 @@ def parse_date(value) -> str:
     try:
         return pd.Timestamp(value_str).strftime("%Y-%m-%d")
     except Exception:
-        return value_str
+        # Unparseable content (e.g. CSV footers like
+        # As of 2026-08-27 22:21 GMT-04:00) -> treat as no date.
+        return ""
+
+
+def is_garbage_date_row(raw_value) -> bool:
+    # True when a date field has content that is neither empty,
+    # the '-' nodate marker, nor an actually parseable date
+    # (e.g. source-file footer lines). Such rows must be skipped.
+    if raw_value is None:
+        return False
+    try:
+        if pd.isna(raw_value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    s = str(raw_value).strip()
+    if not s or s == "-":
+        return False
+    return not parse_date(raw_value)
 
 
 def normalize_symbol(raw_symbol: str) -> str:
@@ -211,6 +230,8 @@ def parse_wealthsimple(filepath: Path, account_type: str) -> list[Transaction]:
     df = pd.read_csv(filepath)
 
     for _, row in df.iterrows():
+        if is_garbage_date_row(row.get("effective_date")):
+            continue
         activity_type = safe_str(row.get("activity_type"))
         activity_sub_type = safe_str(row.get("activity_sub_type"))
 
@@ -261,6 +282,8 @@ def parse_qtrade(filepath: Path, account_type: str) -> list[Transaction]:
     df = dfs[0]
 
     for _, row in df.iterrows():
+        if is_garbage_date_row(row.get("Entry Date")):
+            continue
         action = safe_str(row.get("Action"))
         normalized_type = normalize_type("qtrade", action)
         quantity = safe_float(row.get("Qty"))
@@ -299,6 +322,8 @@ def parse_disnat(filepath: Path, account_type: str) -> list[Transaction]:
     df = pd.read_excel(filepath)
 
     for _, row in df.iterrows():
+        if is_garbage_date_row(row.get("Trade Date")):
+            continue
         txn_type = safe_str(row.get("Transaction Type"))
         normalized_type = normalize_type("disnat", txn_type)
         quantity = safe_float(row.get("Quantity"))

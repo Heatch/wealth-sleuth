@@ -3,3 +3,6 @@ openpyxl>=3.1
 xlrd>=2.0
 lxml>=5.0
 yfinance>=0.2
+fastapi>=0.100
+uvicorn[standard]>=0.20
+pydantic>=2.0

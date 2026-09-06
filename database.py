@@ -85,6 +85,24 @@ CREATE TABLE IF NOT EXISTS holdings (
     UNIQUE(account_id, security_id)
 );
 
+-- Historical daily close prices per security (populated by fetch_price_history.py)
+CREATE TABLE IF NOT EXISTS price_history (
+    id INTEGER PRIMARY KEY,
+    security_id INTEGER NOT NULL REFERENCES securities(id),
+    date TEXT NOT NULL,
+    close_price REAL NOT NULL,
+    currency TEXT NOT NULL,
+    UNIQUE(security_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_price_history_security_date
+    ON price_history(security_id, date);
+
+-- Historical USD->CAD FX rates (populated by fetch_price_history.py)
+CREATE TABLE IF NOT EXISTS fx_history (
+    date TEXT PRIMARY KEY,
+    rate REAL NOT NULL
+);
+
 -- Schema metadata
 CREATE TABLE IF NOT EXISTS schema_metadata (
     version TEXT PRIMARY KEY,
