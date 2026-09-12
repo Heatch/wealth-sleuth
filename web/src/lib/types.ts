@@ -20,6 +20,7 @@ export interface PortfolioSummary {
   fx_rate: number;
   currency: string;
   returns: Record<string, PeriodReturns>;
+  cash_total?: number | null;
 }
 
 export interface HistoryPoint {
@@ -64,5 +65,15 @@ export interface HoldingsResponse {
   holdings: Holding[];
   totals: HoldingsTotals;
   currency: string;
+}
+
+export interface Account {
+  id: number;
+  brokerage: string;
+  account_type: string;
+  currency: string;
+  txn_count: number;
+  holding_count: number;
+  has_holdings: boolean;
 }
 

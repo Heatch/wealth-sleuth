@@ -31,6 +31,7 @@ class PortfolioSummary(BaseModel):
     fx_rate: float
     currency: str
     returns: dict[str, PeriodReturns]
+    cash_total: Optional[float] = None
 
 
 class HistoryPoint(BaseModel):
@@ -75,4 +76,18 @@ class HoldingsResponse(BaseModel):
     holdings: list[Holding]
     totals: HoldingsTotals
     currency: str
+
+
+class Account(BaseModel):
+    id: int
+    brokerage: str
+    account_type: str
+    currency: str
+    txn_count: int
+    holding_count: int
+    has_holdings: bool
+
+
+class AccountsResponse(BaseModel):
+    accounts: list[Account]
 

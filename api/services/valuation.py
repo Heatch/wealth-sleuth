@@ -11,13 +11,29 @@ from collections import defaultdict
 from api.services.fx import convert, get_fx_rate_on
 
 
-def get_date_range(conn):
-    """First/last dates covering transactions and prices."""
+def get_date_range(conn, account_ids=None):
+    """First/last dates covering transactions and prices.
+
+    When account_ids is given, only those accounts' transactions are
+    considered for the date range. Price history range is always global.
+    """
     # Only real YYYY-MM-DD dates (never CSV footers like "As of ...")
     valid = "date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"
-    lo = conn.execute("SELECT MIN(date) AS dmin FROM transactions WHERE " + valid).fetchone()
+    params = list(account_ids) if account_ids else []
+    if account_ids:
+        placeholders = ",".join("?" * len(account_ids))
+        acct_filter = f" AND account_id IN ({placeholders})"
+    else:
+        acct_filter = ""
+    lo = conn.execute(
+        "SELECT MIN(date) AS dmin FROM transactions WHERE " + valid + acct_filter,
+        params,
+    ).fetchone()
     first_txn = lo["dmin"] if lo else None
-    hi = conn.execute("SELECT MAX(date) AS dmax FROM transactions WHERE " + valid).fetchone()
+    hi = conn.execute(
+        "SELECT MAX(date) AS dmax FROM transactions WHERE " + valid + acct_filter,
+        params,
+    ).fetchone()
     last_txn = hi["dmax"] if hi else None
     lp = conn.execute("SELECT MAX(date) AS dmax FROM price_history").fetchone()
     last_price = lp["dmax"] if lp else None
@@ -45,11 +61,17 @@ def load_securities(conn):
     return secs
 
 
-def load_transactions(conn):
-    """All transactions ordered by date (undated first)."""
+def load_transactions(conn, account_ids=None):
+    """All transactions ordered by date (undated first), optionally filtered."""
     q = "SELECT date, type, quantity, net_amount, currency, security_id, account_id "
-    q += "FROM transactions ORDER BY date, id"
-    return conn.execute(q).fetchall()
+    q += "FROM transactions"
+    params: list = []
+    if account_ids:
+        placeholders = ",".join("?" * len(account_ids))
+        q += f" WHERE account_id IN ({placeholders})"
+        params = list(account_ids)
+    q += " ORDER BY date, id"
+    return conn.execute(q, params).fetchall()
 
 
 def apply_txn(t, positions, cash):
@@ -151,12 +173,15 @@ def fx_rate_on_index(fx_dates, fx_rates, d):
     return fx_rates[i]
 
 
-def daily_portfolio_values(conn, currency="CAD"):
-    """Daily (date, value) series plus per-date external cash flows."""
+def daily_portfolio_values(conn, currency="CAD", account_ids=None):
+    """Daily (date, value) series plus per-date external cash flows.
+
+    When account_ids is given, only those accounts are included.
+    """
     currency = (currency or "CAD").upper()
     price_map = load_price_map(conn)
     secs = load_securities(conn)
-    txns = load_transactions(conn)
+    txns = load_transactions(conn, account_ids)
     fx_dates, fx_rates = load_fx_index(conn)
     by_date = defaultdict(list)
     undated = []
@@ -165,7 +190,7 @@ def daily_portfolio_values(conn, currency="CAD"):
             by_date[t["date"]].append(t)
         else:
             undated.append(t)
-    first, last = get_date_range(conn)
+    first, last = get_date_range(conn, account_ids)
     if not first or not last:
         return [], {}
     positions = {}
@@ -190,26 +215,31 @@ def daily_portfolio_values(conn, currency="CAD"):
         total = value_positions(positions, secs, price_map, price_index, d, currency, fx_rate)
         total += value_cash(cash, currency, fx_rate)
         series.append((d, total))
-    return series, flows
+    # Final cash balance in display currency (for the cash totals line)
+    last_fx = fx_rate_on_index(fx_dates, fx_rates, last) if all_dates else 1.0
+    cash_total = value_cash(cash, currency, last_fx)
+    return series, flows, cash_total
 
 
-def daily_portfolio_values_cached(currency="CAD"):
+def daily_portfolio_values_cached(currency="CAD", account_ids=None):
     """TTL-cached wrapper around daily_portfolio_values.
 
     The underlying data changes at most once per day (batch scripts),
     so a 5-minute TTL eliminates duplicate computation between the
-    summary and history endpoints on page load.
+    summary and history endpoints on page load. The cache key includes
+    the sorted account filter so each combination is cached separately.
     """
     from api.cache import cache
 
-    key = f"valuation_{currency}"
+    acct_key = tuple(sorted(account_ids)) if account_ids else "all"
+    key = f"valuation_{currency}_{acct_key}"
     cached = cache.get(key)
     if cached is not None:
         return cached
     from database import get_connection
     conn = get_connection()
     try:
-        result = daily_portfolio_values(conn, currency)
+        result = daily_portfolio_values(conn, currency, account_ids)
     finally:
         conn.close()
     cache.set(key, result)

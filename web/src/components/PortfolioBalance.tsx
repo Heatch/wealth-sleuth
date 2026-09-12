@@ -51,7 +51,17 @@ export default function PortfolioBalance({ summary, currency, onCurrency, period
     return <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>Loading portfolio…</div>;
   }
   const ret = summary.returns[PERIOD_KEYS[period]];
-  const retVal = ret ? ret[method] : null;
+  // When TWR/MWR/naive converge (no external cash flows in the period),
+  // hide the method toggle and show a single value.
+  const methodVals = ret
+    ? [ret.twr, ret.mwr, ret.naive].filter(
+        (v): v is number => v !== null && v !== undefined
+      )
+    : [];
+  const converged =
+    methodVals.length >= 2 &&
+    Math.max(...methodVals) - Math.min(...methodVals) < 0.0001;
+  const retVal = converged ? methodVals[0] : ret ? ret[method] : null;
   const gain = retVal !== null && retVal !== undefined;
   const dayGain = (summary.total_change_today ?? 0) >= 0;
   return (
@@ -64,6 +74,9 @@ export default function PortfolioBalance({ summary, currency, onCurrency, period
           </div>
           <div className="mt-2 text-sm tnum" style={{ color: dayGain ? "var(--moss)" : "var(--brick)" }}>
             {fmtMoney(summary.total_change_today)} ({fmtPct(summary.total_change_today_pct)}) today
+          </div>
+          <div className="mt-1 text-sm tnum" style={{ color: "var(--ink-soft)" }}>
+            Cash: {fmtMoney(summary.cash_total)}
           </div>
         </div>
         <div className="flex gap-1 rounded-full p-1" style={{ background: "color-mix(in srgb, var(--ink) 6%, transparent)" }}>
@@ -100,23 +113,25 @@ export default function PortfolioBalance({ summary, currency, onCurrency, period
             </button>
           ))}
         </div>
-        <div className="flex gap-1">
-          {METHODS.map((m) => (
-            <button
-              key={m.key}
-              title={m.hint}
-              onClick={() => onMethod(m.key)}
-              className="rounded px-2.5 py-1 text-sm"
-              style={{
-                background: m.key === method ? "color-mix(in srgb, var(--gold) 18%, transparent)" : "transparent",
-                color: m.key === method ? "var(--ink)" : "var(--ink-soft)",
-                fontWeight: m.key === method ? 600 : 400,
-              }}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
+        {!converged && (
+          <div className="flex gap-1">
+            {METHODS.map((m) => (
+              <button
+                key={m.key}
+                title={m.hint}
+                onClick={() => onMethod(m.key)}
+                className="rounded px-2.5 py-1 text-sm"
+                style={{
+                  background: m.key === method ? "color-mix(in srgb, var(--gold) 18%, transparent)" : "transparent",
+                  color: m.key === method ? "var(--ink)" : "var(--ink-soft)",
+                  fontWeight: m.key === method ? 600 : 400,
+                }}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="text-2xl tnum" style={{ color: gain && (retVal ?? 0) >= 0 ? "var(--moss)" : "var(--brick)" }}>
           {fmtPct(retVal)}
         </div>

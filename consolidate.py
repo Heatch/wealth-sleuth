@@ -493,15 +493,18 @@ def consolidate(
         for brokerage in BROKERAGE_MAP.values():
             brokerage_ids[brokerage] = get_or_create_brokerage(conn, brokerage)
 
-        # Insert accounts
+        # Insert accounts (keyed by brokerage + type + currency,
+        # so multi-currency brokerages like Disnat get separate
+        # CAD and USD sub-accounts automatically)
         account_cache = {}
         for txn in all_transactions:
-            key = (txn.brokerage, txn.account_type)
+            key = (txn.brokerage, txn.account_type, txn.currency)
             if key not in account_cache:
                 account_cache[key] = get_or_create_account(
                     conn,
                     brokerage_ids[txn.brokerage],
                     txn.account_type,
+                    txn.currency,
                 )
 
         # Insert securities (dynamic: no lookup table)
@@ -558,7 +561,7 @@ def consolidate(
                 skipped += 1
                 continue
 
-            account_id = account_cache[(txn.brokerage, txn.account_type)]
+            account_id = account_cache[(txn.brokerage, txn.account_type, txn.currency)]
             security_id = None
             if is_valid_security_symbol(txn.symbol):
                 canonical_symbol = normalize_symbol(txn.symbol)

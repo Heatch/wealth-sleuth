@@ -1,5 +1,6 @@
 ﻿// Thin API client for the FastAPI backend (proxied via vite.config.ts).
 import type {
+  Account,
   Currency,
   HoldingSort,
   HoldingsResponse,
@@ -17,20 +18,34 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function fetchSummary(currency: Currency): Promise<PortfolioSummary> {
-  return get<PortfolioSummary>(`/api/portfolio/summary?currency=${currency}`);
+function withAccounts(url: string, accounts?: number[] | null): string {
+  if (accounts && accounts.length) return `${url}&accounts=${accounts.join(",")}`;
+  return url;
 }
 
-export function fetchHistory(period: Period, currency: Currency): Promise<PortfolioHistory> {
-  return get<PortfolioHistory>(`/api/portfolio/history?period=${period}&currency=${currency}`);
+export function fetchSummary(currency: Currency, accounts?: number[] | null): Promise<PortfolioSummary> {
+  return get<PortfolioSummary>(withAccounts(`/api/portfolio/summary?currency=${currency}`, accounts));
+}
+
+export function fetchHistory(period: Period, currency: Currency, accounts?: number[] | null): Promise<PortfolioHistory> {
+  return get<PortfolioHistory>(withAccounts(`/api/portfolio/history?period=${period}&currency=${currency}`, accounts));
 }
 
 export function fetchHoldings(
   currency: Currency,
   sort: HoldingSort = "value",
   order: SortOrder = "desc",
+  accounts?: number[] | null,
 ): Promise<HoldingsResponse> {
-  return get<HoldingsResponse>(`/api/holdings?currency=${currency}&sort=${sort}&order=${order}`);
+  return get<HoldingsResponse>(withAccounts(`/api/holdings?currency=${currency}&sort=${sort}&order=${order}`, accounts));
+}
+
+export interface AccountsResponse {
+  accounts: Account[];
+}
+
+export function fetchAccounts(): Promise<AccountsResponse> {
+  return get<AccountsResponse>(`/api/accounts`);
 }
 
 export interface StatusResponse {

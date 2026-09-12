@@ -1,4 +1,5 @@
 ﻿import type { Holding, HoldingsTotals, HoldingSort, SortOrder } from "../lib/types";
+import { accountLabel, brokerageLabel } from "../lib/format";
 
 function fmtMoney(v: number | null | undefined): string {
   if (v === null || v === undefined) return "--";
@@ -76,7 +77,7 @@ export default function HoldingsTable({ holdings, totals, sort, order, onSort }:
                 <td className="py-2 pr-3">
                   <div>{h.name}</div>
                   <div className="text-xs" style={{ color: "var(--ink-soft)" }}>
-                    {h.brokerage} · {h.account_type}
+                    {brokerageLabel(h.brokerage)} · {accountLabel(h.account_type)} · {h.currency}
                   </div>
                 </td>
                 <td className="py-2 pr-3"><code>{h.symbol}</code></td>

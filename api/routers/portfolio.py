@@ -4,8 +4,8 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.deps import get_db, validate_currency, validate_period
-from api.models import HoldingsResponse, Holding, HoldingsTotals, PortfolioHistory, HistoryPoint, PortfolioSummary, PeriodReturns
+from api.deps import get_db, parse_account_ids, validate_currency, validate_period
+from api.models import AccountsResponse, Account, HoldingsResponse, Holding, HoldingsTotals, PortfolioHistory, HistoryPoint, PortfolioSummary, PeriodReturns
 from api.services import fx as fx_service
 from api.services import returns as returns_service
 from api.services import valuation as valuation_service
@@ -21,17 +21,48 @@ def _to_period_returns(d: dict) -> PeriodReturns:
     return PeriodReturns(twr=d.get("twr"), mwr=d.get("mwr"), naive=d.get("naive"))
 
 
+@router.get("/accounts", response_model=AccountsResponse)
+def get_accounts(
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """List all known accounts with holding/transaction counts."""
+    rows = conn.execute(
+        "SELECT a.id, b.name AS brokerage, a.account_type, a.currency, "
+        "(SELECT COUNT(*) FROM transactions t WHERE t.account_id = a.id) AS txn_count, "
+        "(SELECT COUNT(*) FROM holdings h WHERE h.account_id = a.id) AS holding_count "
+        "FROM accounts a "
+        "JOIN brokerages b ON a.brokerage_id = b.id "
+        "ORDER BY b.name, a.account_type, a.currency"
+    ).fetchall()
+    return AccountsResponse(
+        accounts=[
+            Account(
+                id=r["id"],
+                brokerage=r["brokerage"],
+                account_type=r["account_type"],
+                currency=r["currency"],
+                txn_count=r["txn_count"],
+                holding_count=r["holding_count"],
+                has_holdings=r["holding_count"] > 0,
+            )
+            for r in rows
+        ]
+    )
+
+
 @router.get("/portfolio/summary", response_model=PortfolioSummary)
 def get_summary(
     currency: str = Query("CAD"),
+    accounts: str = Query(None),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Current value, daily change, and returns for every period."""
     try:
         cur = validate_currency(currency)
+        account_ids = parse_account_ids(accounts)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    series, flows = valuation_service.daily_portfolio_values_cached(cur)
+    series, flows, cash_total = valuation_service.daily_portfolio_values_cached(cur, account_ids)
     if not series:
         raise HTTPException(status_code=404, detail="No portfolio data")
     end_value = series[-1][1]
@@ -49,6 +80,7 @@ def get_summary(
         fx_rate=fx_rate,
         currency=cur,
         returns=mapped,
+        cash_total=cash_total,
     )
 
 
@@ -56,15 +88,17 @@ def get_summary(
 def get_history(
     period: str = Query("1y"),
     currency: str = Query("CAD"),
+    accounts: str = Query(None),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Time series of portfolio value for the chart."""
     try:
         per = validate_period(period)
         cur = validate_currency(currency)
+        account_ids = parse_account_ids(accounts)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    series, flows = valuation_service.daily_portfolio_values_cached(cur)
+    series, flows, _cash = valuation_service.daily_portfolio_values_cached(cur, account_ids)
     if not series:
         raise HTTPException(status_code=404, detail="No portfolio data")
     start = returns_service.period_start(period, series, series[-1][0])
@@ -82,11 +116,13 @@ def get_holdings(
     currency: str = Query("CAD"),
     sort: str = Query("value"),
     order: str = Query("desc"),
+    accounts: str = Query(None),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Current holdings with live prices and gain/loss."""
     try:
         cur = validate_currency(currency)
+        account_ids = parse_account_ids(accounts)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if sort not in ("value", "gain", "gain_pct", "book_cost", "symbol", "weight", "name", "shares"):
@@ -96,7 +132,7 @@ def get_holdings(
     reverse = order == "desc"
 
     fx_rate, _ = fx_service.get_latest_fx_rate(conn)
-    rows = conn.execute(
+    query = (
         "SELECT h.quantity, h.avg_cost, h.total_cost_basis, "
         "s.symbol, COALESCE(s.description, s.name) AS name, s.currency, s.asset_class, s.last_price, "
         "b.name AS brokerage, a.account_type "
@@ -104,8 +140,14 @@ def get_holdings(
         "JOIN accounts a ON h.account_id = a.id "
         "JOIN brokerages b ON a.brokerage_id = b.id "
         "JOIN securities s ON h.security_id = s.id "
-        "WHERE s.is_cash = 0 OR s.is_cash IS NULL"
-    ).fetchall()
+        "WHERE (s.is_cash = 0 OR s.is_cash IS NULL)"
+    )
+    params: list = []
+    if account_ids:
+        placeholders = ",".join("?" * len(account_ids))
+        query += f" AND a.id IN ({placeholders})"
+        params = list(account_ids)
+    rows = conn.execute(query, params).fetchall()
 
     holdings = []
     for r in rows:

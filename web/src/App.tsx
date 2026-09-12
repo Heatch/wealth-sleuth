@@ -1,8 +1,10 @@
-﻿import { useEffect, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
-import { fetchHoldings, fetchHistory, fetchSummary, fetchStatus } from "./api/portfolio";
+import { fetchAccounts, fetchHoldings, fetchHistory, fetchSummary, fetchStatus } from "./api/portfolio";
 import type { Currency, HoldingSort, Period, ReturnMethod, SortOrder } from "./lib/types";
+import AccountTypeFilter from "./components/AccountTypeFilter";
+import BrokerageFilter from "./components/BrokerageFilter";
 import HoldingsTable from "./components/HoldingsTable";
 import PerformanceChart, { type ZoomRange } from "./components/PerformanceChart";
 import PortfolioBalance from "./components/PortfolioBalance";
@@ -15,6 +17,29 @@ export default function App() {
   const [sort, setSort] = useState<HoldingSort>("value");
   const [order, setOrder] = useState<SortOrder>("desc");
   const [zoom, setZoom] = useState<ZoomRange | null>(null);
+  const [selectedBrokerages, setSelectedBrokerages] = useState<string[] | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const saved = window.localStorage.getItem("pt-brokerages");
+      return saved ? (JSON.parse(saved) as string[]) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [selectedTypes, setSelectedTypes] = useState<string[] | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const saved = window.localStorage.getItem("pt-types");
+      if (!saved) return null;
+      const parsed = JSON.parse(saved) as string[];
+      // Migrate old plain-type format (["tfsa"]) to composite keys
+      // (["tfsa__CAD"]); unknown entries reset to All.
+      if (parsed.some((x) => !x.includes("__"))) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  });
   const [dark, setDark] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     const saved = window.localStorage.getItem("pt-theme");
@@ -27,17 +52,47 @@ export default function App() {
     window.localStorage.setItem("pt-theme", dark ? "dark" : "light");
   }, [dark]);
 
+  useEffect(() => {
+    window.localStorage.setItem("pt-brokerages", JSON.stringify(selectedBrokerages));
+  }, [selectedBrokerages]);
+  useEffect(() => {
+    window.localStorage.setItem("pt-types", JSON.stringify(selectedTypes));
+  }, [selectedTypes]);
+
+  const accountsQ = useQuery({
+    queryKey: ["accounts"],
+    queryFn: fetchAccounts,
+    staleTime: 3600_000,
+  });
+
+  // Derive selected account IDs from the two dimension filters.
+  // null = all accounts (no filtering).
+  const selectedAccounts: number[] | null = useMemo(() => {
+    const list = accountsQ.data?.accounts;
+    if (!list) return null;
+    if (selectedBrokerages === null && selectedTypes === null) return null;
+    const filtered = list.filter((a) => {
+      const brkOk = selectedBrokerages === null || selectedBrokerages.includes(a.brokerage);
+      const typOk =
+        selectedTypes === null ||
+        selectedTypes.includes(`${a.account_type}__${a.currency}`);
+      return brkOk && typOk;
+    });
+    if (filtered.length === list.length) return null;
+    return filtered.map((a) => a.id);
+  }, [accountsQ.data, selectedBrokerages, selectedTypes]);
+
   const summaryQ = useQuery({
-    queryKey: ["summary", currency],
-    queryFn: () => fetchSummary(currency),
+    queryKey: ["summary", currency, selectedAccounts],
+    queryFn: () => fetchSummary(currency, selectedAccounts ?? undefined),
   });
   const historyQ = useQuery({
-    queryKey: ["history", period, currency],
-    queryFn: () => fetchHistory(period, currency),
+    queryKey: ["history", period, currency, selectedAccounts],
+    queryFn: () => fetchHistory(period, currency, selectedAccounts ?? undefined),
   });
   const holdingsQ = useQuery({
-    queryKey: ["holdings", currency, sort, order],
-    queryFn: () => fetchHoldings(currency, sort, order),
+    queryKey: ["holdings", currency, sort, order, selectedAccounts],
+    queryFn: () => fetchHoldings(currency, sort, order, selectedAccounts ?? undefined),
   });
   const statusQ = useQuery({
     queryKey: ["status"],
@@ -65,10 +120,32 @@ export default function App() {
     setCurrency(c);
     setZoom(null);
   };
+  const handleBrokerages = (ids: string[] | null) => {
+    setSelectedBrokerages(ids);
+    setZoom(null);
+  };
+  const handleTypes = (ids: string[] | null) => {
+    setSelectedTypes(ids);
+    setZoom(null);
+  };
+
+  const nothingSelected = selectedAccounts !== null && selectedAccounts.length === 0;
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-8">
-      <div className="mb-6 flex justify-end">
+      <div className="mb-6 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <BrokerageFilter
+            accounts={accountsQ.data?.accounts}
+            selected={selectedBrokerages}
+            onChange={handleBrokerages}
+          />
+          <AccountTypeFilter
+            accounts={accountsQ.data?.accounts}
+            selected={selectedTypes}
+            onChange={handleTypes}
+          />
+        </div>
         <button
           onClick={() => setDark(!dark)}
           aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
@@ -85,23 +162,31 @@ export default function App() {
         </div>
       ) : null}
       <StatusBanner status={statusQ.data} />
-      <PortfolioBalance
-        summary={summaryQ.data}
-        currency={currency}
-        onCurrency={handleCurrency}
-        period={period}
-        onPeriod={handlePeriod}
-        method={method}
-        onMethod={setMethod}
-      />
-      <PerformanceChart history={historyQ.data} zoom={zoom} onZoom={setZoom} />
-      <HoldingsTable
-        holdings={holdingsQ.data?.holdings}
-        totals={holdingsQ.data?.totals}
-        sort={sort}
-        order={order}
-        onSort={handleSort}
-      />
+      {nothingSelected ? (
+        <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>
+          Select accounts above to view portfolio data.
+        </div>
+      ) : (
+        <>
+          <PortfolioBalance
+            summary={summaryQ.data}
+            currency={currency}
+            onCurrency={handleCurrency}
+            period={period}
+            onPeriod={handlePeriod}
+            method={method}
+            onMethod={setMethod}
+          />
+          <PerformanceChart history={historyQ.data} zoom={zoom} onZoom={setZoom} />
+          <HoldingsTable
+            holdings={holdingsQ.data?.holdings}
+            totals={holdingsQ.data?.totals}
+            sort={sort}
+            order={order}
+            onSort={handleSort}
+          />
+        </>
+      )}
       <div className="mt-8 text-xs" style={{ color: "var(--ink-soft)" }}>
         Prices via yfinance. Returns computed from full transaction history.
       </div>

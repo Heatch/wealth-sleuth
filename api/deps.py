@@ -13,11 +13,10 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
     NOTE: a shared module-level connection was tried here but breaks
     under uvicorn's threaded workers (sqlite3 objects are bound to the
     creating thread). Per-request connections are ~1ms and always safe.
-    WAL mode is enabled per connection for concurrent reads.
+    WAL + busy_timeout are set in get_connection() for concurrency.
     """
     conn = get_connection(None)
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
         yield conn
     finally:
         conn.close()
@@ -43,4 +42,15 @@ def validate_period(period: str) -> str:
     if p not in valid:
         raise ValueError("period must be one of: 1m, 6m, ytd, 1y, 3y, all")
     return p
+
+
+def parse_account_ids(accounts: Optional[str]) -> Optional[list[int]]:
+    """Parse comma-separated account IDs. None/empty means all accounts."""
+    if not accounts:
+        return None
+    try:
+        ids = [int(x.strip()) for x in accounts.split(",") if x.strip()]
+    except ValueError:
+        raise ValueError("accounts must be comma-separated integer IDs")
+    return ids or None
 

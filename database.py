@@ -17,12 +17,15 @@ CREATE TABLE IF NOT EXISTS brokerages (
 );
 
 -- Accounts (within brokerages)
+-- Each (brokerage, account_type, currency) is a separate account.
+-- Disnat has CAD + USD sub-accounts for both TFSA and non-reg (4 total).
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY,
     brokerage_id INTEGER NOT NULL REFERENCES brokerages(id),
     account_type TEXT NOT NULL,
     account_identifier TEXT,
-    UNIQUE(brokerage_id, account_type)
+    currency TEXT NOT NULL DEFAULT 'CAD',
+    UNIQUE(brokerage_id, account_type, currency)
 );
 
 -- Securities / company info
@@ -119,13 +122,28 @@ CREATE TABLE IF NOT EXISTS schema_metadata (
 """
 
 
-def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    """Get a SQLite connection with row factory enabled."""
+def get_connection(db_path: Optional[Path] = None, timeout: float = 10.0) -> sqlite3.Connection:
+    """Get a SQLite connection with row factory enabled.
+
+    WAL mode allows concurrent readers alongside the background price
+    fetcher thread. busy_timeout makes readers wait on locks instead of
+    raising SQLITE_BUSY immediately (which surfaced as API 500s when the
+    frontend fires 5 simultaneous queries during a background write).
+    """
     path = db_path or DB_PATH
-    conn = sqlite3.connect(path)
+    # check_same_thread=False: FastAPI runs sync dependencies/endpoints on
+    # different anyio worker threads per await point, so a per-request
+    # connection may be touched from multiple threads over its lifetime.
+    # This is safe because each request owns its connection exclusively;
+    # nothing shares one connection concurrently across threads.
+    conn = sqlite3.connect(path, timeout=timeout, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     # Enforce foreign keys
     conn.execute("PRAGMA foreign_keys = ON")
+    # Concurrent readers + one writer; wait on locks instead of failing
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 
@@ -215,20 +233,43 @@ def get_or_create_account(
     conn: sqlite3.Connection,
     brokerage_id: int,
     account_type: str,
+    currency: str = "CAD",
     account_identifier: Optional[str] = None,
 ) -> int:
-    """Get existing account id or create new one."""
+    """Get existing account id or create new one.
+
+    Accounts are keyed by (brokerage, account_type, currency) because
+    brokerages like Disnat have separate CAD and USD sub-accounts.
+    """
     row = conn.execute(
-        "SELECT id FROM accounts WHERE brokerage_id = ? AND account_type = ?",
-        (brokerage_id, account_type),
+        "SELECT id FROM accounts WHERE brokerage_id = ? AND account_type = ? AND currency = ?",
+        (brokerage_id, account_type, currency),
     ).fetchone()
     if row:
         return row["id"]
     cursor = conn.execute(
-        "INSERT INTO accounts (brokerage_id, account_type, account_identifier) VALUES (?, ?, ?)",
-        (brokerage_id, account_type, account_identifier),
+        "INSERT INTO accounts (brokerage_id, account_type, currency, account_identifier) VALUES (?, ?, ?, ?)",
+        (brokerage_id, account_type, currency, account_identifier),
     )
     return cursor.lastrowid
+
+
+def migrate_accounts_schema(db_path: Optional[Path] = None) -> list[str]:
+    """Add currency column to accounts if missing. Returns added columns."""
+    conn = get_connection(db_path)
+    try:
+        existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(accounts)").fetchall()
+        }
+        added = []
+        if "currency" not in existing:
+            conn.execute("ALTER TABLE accounts ADD COLUMN currency TEXT NOT NULL DEFAULT 'CAD'")
+            added.append("currency")
+        conn.commit()
+        return added
+    finally:
+        conn.close()
 
 
 def get_or_create_security(
