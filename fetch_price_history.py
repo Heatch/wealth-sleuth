@@ -203,6 +203,36 @@ def fetch_fx_history(conn, delay=0.25, force=False, dry_run=False):
     return count
 
 
+def fetch_incremental(db_path=None, delay: float = 0.25) -> dict:
+    """Fetch only missing/stale price data based on gap detection.
+
+    Uses detect_price_gaps() to find securities with no data or stale
+    data, then fetches just what's needed. Called by the API startup
+    handler in a background thread.
+    """
+    from api.services.price_gaps import detect_price_gaps
+    from database import get_connection
+
+    conn = get_connection(db_path)
+    try:
+        gaps = detect_price_gaps(conn)
+    finally:
+        conn.close()
+
+    if not gaps["missing"] and not gaps["stale"] and not gaps["fx_stale"]:
+        print("Price data is current. Nothing to fetch.")
+        return {"securities_updated": 0, "securities_failed": 0,
+                "price_rows": 0, "fx_rows": 0}
+
+    print(f"Fetching gaps: {len(gaps['missing'])} new, "
+          f"{len(gaps['stale'])} stale securities...")
+    # update_price_history already skips existing dates, so a normal
+    # run only fetches what's missing. Force=False keeps it incremental.
+    return update_price_history(
+        db_path=db_path, delay=delay, force=False, dry_run=False,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fetch historical prices from yfinance into portfolio.db."

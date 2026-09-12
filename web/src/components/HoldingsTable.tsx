@@ -19,8 +19,9 @@ function fmtQty(v: number): string {
 
 type Col = { key: HoldingSort | "shares"; label: string; numeric: boolean; sortable: boolean };
 const COLS: Col[] = [
+  { key: "name", label: "Name", numeric: false, sortable: true },
   { key: "symbol", label: "Symbol", numeric: false, sortable: true },
-  { key: "shares", label: "Shares", numeric: true, sortable: false },
+  { key: "shares", label: "Shares", numeric: true, sortable: true },
   { key: "value", label: "Value", numeric: true, sortable: true },
   { key: "gain", label: "Gain", numeric: true, sortable: true },
   { key: "gain_pct", label: "Gain %", numeric: true, sortable: true },
@@ -49,7 +50,6 @@ export default function HoldingsTable({ holdings, totals, sort, order, onSort }:
       <table className="mt-3 w-full text-sm tnum">
         <thead>
           <tr style={{ borderBottom: "1px solid color-mix(in srgb, var(--ink) 12%, transparent)" }}>
-            <th className="py-2 pr-3 text-left font-medium" style={{ color: "var(--ink-soft)" }}>Name</th>
             {COLS.map((c) => (
               <th
                 key={c.key}
@@ -81,7 +81,15 @@ export default function HoldingsTable({ holdings, totals, sort, order, onSort }:
                 </td>
                 <td className="py-2 pr-3"><code>{h.symbol}</code></td>
                 <td className="py-2 pr-3 text-right">{fmtQty(h.quantity)}</td>
-                <td className="py-2 pr-3 text-right">{fmtMoney(h.current_value)}</td>
+                <td className="py-2 pr-3 text-right">
+                  {h.current_value !== null && h.current_value !== undefined ? (
+                    fmtMoney(h.current_value)
+                  ) : (
+                    <span className="animate-pulse" style={{ color: "var(--ink-soft)" }}>
+                      Loading...
+                    </span>
+                  )}
+                </td>
                 <td className="py-2 pr-3 text-right" style={{ color: g >= 0 ? "var(--moss)" : "var(--brick)" }}>
                   {fmtMoney(h.gain)}
                 </td>

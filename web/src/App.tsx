@@ -1,11 +1,12 @@
 ﻿import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
-import { fetchHoldings, fetchHistory, fetchSummary } from "./api/portfolio";
+import { fetchHoldings, fetchHistory, fetchSummary, fetchStatus } from "./api/portfolio";
 import type { Currency, HoldingSort, Period, ReturnMethod, SortOrder } from "./lib/types";
 import HoldingsTable from "./components/HoldingsTable";
 import PerformanceChart, { type ZoomRange } from "./components/PerformanceChart";
 import PortfolioBalance from "./components/PortfolioBalance";
+import StatusBanner from "./components/StatusBanner";
 
 export default function App() {
   const [currency, setCurrency] = useState<Currency>("CAD");
@@ -37,6 +38,11 @@ export default function App() {
   const holdingsQ = useQuery({
     queryKey: ["holdings", currency, sort, order],
     queryFn: () => fetchHoldings(currency, sort, order),
+  });
+  const statusQ = useQuery({
+    queryKey: ["status"],
+    queryFn: fetchStatus,
+    refetchInterval: 5000,
   });
 
   const handleSort = (s: HoldingSort) => {
@@ -78,6 +84,7 @@ export default function App() {
           <div className="mt-1 text-xs">{String((error as Error).message || error)}</div>
         </div>
       ) : null}
+      <StatusBanner status={statusQ.data} />
       <PortfolioBalance
         summary={summaryQ.data}
         currency={currency}

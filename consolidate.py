@@ -400,17 +400,74 @@ def discover_files(base_dir: Path) -> list[tuple[Path, str, str]]:
     return files
 
 
+def has_file_changes(base_dir: Path, conn) -> bool:
+    """Check if any transaction files changed since last consolidation.
+
+    Compares current file sizes and modification times against the
+    file_manifest table. Returns True if any file is new or modified.
+    """
+    files = discover_files(base_dir)
+    if not files:
+        return False
+    for filepath, _, _ in files:
+        try:
+            stat = filepath.stat()
+        except OSError:
+            continue
+        row = conn.execute(
+            "SELECT file_size, last_modified FROM file_manifest WHERE file_path = ?",
+            (str(filepath),),
+        ).fetchone()
+        if not row or row["file_size"] != stat.st_size or row["last_modified"] != stat.st_mtime:
+            return True
+    return False
+
+
+def update_manifest(base_dir: Path, conn) -> None:
+    """Record current file stats in file_manifest after consolidation."""
+    for filepath, _, _ in discover_files(base_dir):
+        try:
+            stat = filepath.stat()
+        except OSError:
+            continue
+        conn.execute(
+            """INSERT OR REPLACE INTO file_manifest
+               (file_path, file_size, last_modified, processed_at)
+               VALUES (?, ?, ?, datetime('now'))""",
+            (str(filepath), stat.st_size, stat.st_mtime),
+        )
+    conn.commit()
+
+
 def consolidate(
-    documents_dir: Path, db_path: Path, fetch_info: bool = False
-) -> None:
-    """Main consolidation function."""
+    documents_dir: Path, db_path: Path, fetch_info: bool = False,
+    skip_if_unchanged: bool = False,
+) -> dict:
+    """Main consolidation function.
+
+    If skip_if_unchanged is True and no files changed since last run,
+    skips parsing entirely and returns {"skipped": True}.
+    """
     print(f"Scanning for transaction documents in: {documents_dir}")
+
+    # Initialize database first (ensures file_manifest table exists)
+    print(f"Initializing database: {db_path}")
+    init_db(db_path)
+
+    conn_check = get_connection(db_path)
+    try:
+        if skip_if_unchanged and not has_file_changes(documents_dir, conn_check):
+            print("No file changes detected. Skipping consolidation.")
+            return {"skipped": True, "added": 0}
+    finally:
+        conn_check.close()
+
     files = discover_files(documents_dir)
     print(f"Found {len(files)} transaction file(s)")
 
     if not files:
         print("No transaction files found. Exiting.")
-        return
+        return {"skipped": True, "added": 0}
 
     # Parse all files
     all_transactions = []
@@ -428,10 +485,6 @@ def consolidate(
             print(f"    -> Error: {e}")
 
     print(f"\nTotal transactions parsed: {len(all_transactions)}")
-
-    # Initialize database
-    print(f"Initializing database: {db_path}")
-    init_db(db_path)
 
     conn = get_connection(db_path)
     try:
@@ -536,6 +589,10 @@ def consolidate(
         print(f"\nTransactions added: {added}")
         print(f"Transactions skipped (duplicates): {skipped}")
 
+        # Update file manifest
+        update_manifest(documents_dir, conn)
+        conn.commit()
+
         # Refresh holdings
         print("Refreshing holdings...")
         result = refresh_holdings(db_path)
@@ -558,6 +615,8 @@ def consolidate(
         info_result = update_securities(db_path=db_path)
         print(f"  Securities updated: {info_result['updated']}")
         print(f"  Failed: {info_result['failed']}")
+
+    return {"skipped": False, "added": added}
 
 
 def main():

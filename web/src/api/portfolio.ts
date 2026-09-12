@@ -33,3 +33,17 @@ export function fetchHoldings(
   return get<HoldingsResponse>(`/api/holdings?currency=${currency}&sort=${sort}&order=${order}`);
 }
 
+export interface StatusResponse {
+  has_gaps: boolean;
+  gaps: {
+    missing: number[];
+    stale: Array<{ id: number; last_date: string }>;
+    fx_stale: boolean;
+    today: string;
+  };
+}
+
+export function fetchStatus(): Promise<StatusResponse> {
+  return get<StatusResponse>(`/api/status`);
+}
+

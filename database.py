@@ -103,6 +103,14 @@ CREATE TABLE IF NOT EXISTS fx_history (
     rate REAL NOT NULL
 );
 
+-- Manifest of processed transaction files (for change detection)
+CREATE TABLE IF NOT EXISTS file_manifest (
+    file_path TEXT PRIMARY KEY,
+    file_size INTEGER,
+    last_modified REAL,
+    processed_at TEXT DEFAULT (datetime('now'))
+);
+
 -- Schema metadata
 CREATE TABLE IF NOT EXISTS schema_metadata (
     version TEXT PRIMARY KEY,

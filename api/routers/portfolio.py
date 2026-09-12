@@ -31,7 +31,7 @@ def get_summary(
         cur = validate_currency(currency)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    series, flows = valuation_service.daily_portfolio_values(conn, cur)
+    series, flows = valuation_service.daily_portfolio_values_cached(cur)
     if not series:
         raise HTTPException(status_code=404, detail="No portfolio data")
     end_value = series[-1][1]
@@ -64,7 +64,7 @@ def get_history(
         cur = validate_currency(currency)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    series, flows = valuation_service.daily_portfolio_values(conn, cur)
+    series, flows = valuation_service.daily_portfolio_values_cached(cur)
     if not series:
         raise HTTPException(status_code=404, detail="No portfolio data")
     start = returns_service.period_start(period, series, series[-1][0])
@@ -89,7 +89,7 @@ def get_holdings(
         cur = validate_currency(currency)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if sort not in ("value", "gain", "gain_pct", "book_cost", "symbol", "weight"):
+    if sort not in ("value", "gain", "gain_pct", "book_cost", "symbol", "weight", "name", "shares"):
         raise HTTPException(status_code=400, detail="Invalid sort field")
     if order not in ("asc", "desc"):
         raise HTTPException(status_code=400, detail="Invalid order")
@@ -149,6 +149,8 @@ def get_holdings(
         "book_cost": lambda h: h.book_cost,
         "symbol": lambda h: h.symbol,
         "weight": lambda h: (h.weight is None, h.weight or 0),
+        "name": lambda h: (h.name or "").lower(),
+        "shares": lambda h: h.quantity,
     }
     holdings.sort(key=key_map[sort], reverse=reverse)
 
@@ -162,4 +164,32 @@ def get_holdings(
         gain_pct=total_gain_pct,
     )
     return HoldingsResponse(holdings=holdings, totals=totals, currency=cur)
+
+
+@router.get("/status")
+def get_status(
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Return data freshness status (price gaps, background fetch progress)."""
+    from api.services.price_gaps import detect_price_gaps, has_gaps
+
+    gaps = detect_price_gaps(conn)
+    return {
+        "gaps": {
+            "missing": gaps["missing"],
+            "stale": [{"id": sid, "last_date": d} for sid, d in gaps["stale"]],
+            "fx_stale": gaps["fx_stale"],
+            "today": gaps["today"],
+        },
+        "has_gaps": has_gaps(gaps),
+    }
+
+
+@router.post("/cache/clear")
+def clear_cache():
+    """Manually invalidate all API caches."""
+    from api.cache import cache
+
+    cache.invalidate()
+    return {"status": "cleared"}
 

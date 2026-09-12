@@ -129,12 +129,35 @@ def value_cash(cash, currency, fx_rate):
     return total
 
 
+def load_fx_index(conn):
+    """Load all FX rates into sorted arrays for bisect lookup.
+
+    Eliminates ~1,500 individual SQL queries (one per date) by loading
+    once and using bisect, same pattern as price_on().
+    """
+    rows = conn.execute("SELECT date, rate FROM fx_history ORDER BY date").fetchall()
+    dates = [r["date"] for r in rows]
+    rates = [float(r["rate"]) for r in rows]
+    return dates, rates
+
+
+def fx_rate_on_index(fx_dates, fx_rates, d):
+    """Bisect-based FX lookup. Falls back to earliest rate, then 1.0."""
+    if not fx_dates:
+        return 1.0
+    i = bisect.bisect_right(fx_dates, d) - 1
+    if i < 0:
+        return fx_rates[0]
+    return fx_rates[i]
+
+
 def daily_portfolio_values(conn, currency="CAD"):
     """Daily (date, value) series plus per-date external cash flows."""
     currency = (currency or "CAD").upper()
     price_map = load_price_map(conn)
     secs = load_securities(conn)
     txns = load_transactions(conn)
+    fx_dates, fx_rates = load_fx_index(conn)
     by_date = defaultdict(list)
     undated = []
     for t in txns:
@@ -157,7 +180,7 @@ def daily_portfolio_values(conn, currency="CAD"):
     series = []
     flows = {}
     for d in all_dates:
-        fx_rate = get_fx_rate_on(conn, d)
+        fx_rate = fx_rate_on_index(fx_dates, fx_rates, d)
         day_flow = 0.0
         for t in by_date.get(d, []):
             raw_flow = apply_txn(t, positions, cash)
@@ -168,4 +191,27 @@ def daily_portfolio_values(conn, currency="CAD"):
         total += value_cash(cash, currency, fx_rate)
         series.append((d, total))
     return series, flows
+
+
+def daily_portfolio_values_cached(currency="CAD"):
+    """TTL-cached wrapper around daily_portfolio_values.
+
+    The underlying data changes at most once per day (batch scripts),
+    so a 5-minute TTL eliminates duplicate computation between the
+    summary and history endpoints on page load.
+    """
+    from api.cache import cache
+
+    key = f"valuation_{currency}"
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    from database import get_connection
+    conn = get_connection()
+    try:
+        result = daily_portfolio_values(conn, currency)
+    finally:
+        conn.close()
+    cache.set(key, result)
+    return result
 

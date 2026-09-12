@@ -1,18 +1,23 @@
 ﻿"""Shared FastAPI dependencies."""
 
 import sqlite3
-from functools import lru_cache
 from pathlib import Path
 from typing import Generator, Optional
 
 from config import DB_PATH
 from database import get_connection
 
-
 def get_db() -> Generator[sqlite3.Connection, None, None]:
-    """Yield a SQLite connection with row factory. FastAPI dependency."""
+    """Yield a fresh SQLite connection per request. FastAPI dependency.
+
+    NOTE: a shared module-level connection was tried here but breaks
+    under uvicorn's threaded workers (sqlite3 objects are bound to the
+    creating thread). Per-request connections are ~1ms and always safe.
+    WAL mode is enabled per connection for concurrent reads.
+    """
     conn = get_connection(None)
     try:
+        conn.execute("PRAGMA journal_mode=WAL")
         yield conn
     finally:
         conn.close()
