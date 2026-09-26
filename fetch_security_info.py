@@ -210,12 +210,12 @@ def update_securities(
         if force:
             rows = conn.execute(
                 "SELECT id, symbol, currency, is_cdr, asset_class FROM securities "
-                "WHERE is_cash = 0 OR is_cash IS NULL"
+                "WHERE (is_cash = 0 OR is_cash IS NULL) AND (is_benchmark = 0 OR is_benchmark IS NULL)"
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT id, symbol, currency, is_cdr, asset_class FROM securities "
-                "WHERE (is_cash = 0 OR is_cash IS NULL) AND last_price IS NULL"
+                "WHERE (is_cash = 0 OR is_cash IS NULL) AND (is_benchmark = 0 OR is_benchmark IS NULL) AND last_price IS NULL"
             ).fetchall()
 
         updated = 0

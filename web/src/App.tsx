@@ -3,12 +3,15 @@ import { useQuery } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
 import {
   fetchAccounts,
+  fetchBenchmarkHistory,
+  fetchBenchmarks,
   fetchHoldings,
   fetchHistory,
   fetchSummary,
   fetchStatus,
 } from "./api/portfolio";
 import type { AllocationFilter, Currency, Holding, HoldingSort, Period, ReturnMethod, SortOrder } from "./lib/types";
+import { matchesAllocationFilters } from "./lib/allocation";
 import AccountTypeFilter from "./components/AccountTypeFilter";
 import AllocationSection from "./components/AllocationSection";
 import BrokerageFilter from "./components/BrokerageFilter";
@@ -27,7 +30,10 @@ export default function App() {
   const [sort, setSort] = useState<HoldingSort>("value");
   const [order, setOrder] = useState<SortOrder>("desc");
   const [zoom, setZoom] = useState<ZoomRange | null>(null);
-  const [allocationFilter, setAllocationFilter] = useState<AllocationFilter | null>(null);
+  const [allocationFilters, setAllocationFilters] = useState<AllocationFilter[]>([]);
+  const [benchmarksEnabled, setBenchmarksEnabled] = useState(false);
+  const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>([]);
+  const [selectedYear, setSelectedYear] = useState<number | null>(null);
   const [holdingsOpen, setHoldingsOpen] = useState(true);
   const [allocationOpen, setAllocationOpen] = useState(true);
   const [recordsOpen, setRecordsOpen] = useState(true);
@@ -117,9 +123,9 @@ export default function App() {
 
   const filteredHoldings = useMemo(() => {
     const all = holdingsQ.data?.holdings ?? [];
-    if (!allocationFilter) return all;
-    return all.filter((h) => (h[allocationFilter.dimension] ?? "Unknown") === allocationFilter.value);
-  }, [holdingsQ.data, allocationFilter]);
+    if (!allocationFilters.length) return all;
+    return all.filter((h) => matchesAllocationFilters(h, allocationFilters));
+  }, [holdingsQ.data, allocationFilters]);
 
   const filteredTotals = useMemo(() => {
     if (!filteredHoldings.length) return undefined;
@@ -134,22 +140,49 @@ export default function App() {
   }, [filteredHoldings]);
 
   const sliceSymbols = useMemo(() => {
-    if (!allocationFilter || !filteredHoldings.length) return undefined;
+    if (!allocationFilters.length || !filteredHoldings.length) return undefined;
     return Array.from(new Set(filteredHoldings.map((h) => h.symbol)));
-  }, [allocationFilter, filteredHoldings]);
+  }, [allocationFilters, filteredHoldings]);
 
   const summaryQ = useQuery({
-    queryKey: ["summary", currency, selectedAccounts, sliceSymbols],
-    queryFn: () => fetchSummary(currency, selectedAccounts ?? undefined, sliceSymbols),
+    queryKey: ["summary", currency, selectedAccounts, sliceSymbols, selectedYear],
+    queryFn: () => fetchSummary(currency, selectedAccounts ?? undefined, sliceSymbols, selectedYear ?? undefined),
   });
   const historyQ = useQuery({
-    queryKey: ["history", period, currency, selectedAccounts, sliceSymbols],
-    queryFn: () => fetchHistory(period, currency, selectedAccounts ?? undefined, sliceSymbols),
+    queryKey: ["history", period, currency, selectedAccounts, sliceSymbols, selectedYear],
+    queryFn: () => fetchHistory(period, currency, selectedAccounts ?? undefined, sliceSymbols, selectedYear ?? undefined),
   });
   const statusQ = useQuery({
     queryKey: ["status"],
     queryFn: fetchStatus,
     refetchInterval: 5000,
+  });
+
+  const benchmarksQ = useQuery({
+    queryKey: ["benchmarks"],
+    queryFn: fetchBenchmarks,
+    staleTime: 3600_000,
+  });
+  const benchmarkHistoryQ = useQuery({
+    queryKey: [
+      "benchmarkHistory",
+      selectedBenchmarks,
+      period,
+      currency,
+      selectedAccounts,
+      sliceSymbols,
+      selectedYear,
+    ],
+    queryFn: () =>
+      fetchBenchmarkHistory(
+        selectedBenchmarks,
+        period,
+        currency,
+        selectedAccounts ?? undefined,
+        sliceSymbols,
+        selectedYear ?? undefined,
+      ),
+    enabled: benchmarksEnabled && selectedBenchmarks.length > 0,
   });
 
   const handleSort = (s: HoldingSort) => {
@@ -184,35 +217,45 @@ export default function App() {
     });
   };
 
-  const error = summaryQ.error || historyQ.error || holdingsQ.error;
+  const availableYears = historyQ.data?.available_years ?? [];
 
+  const error = summaryQ.error || historyQ.error || holdingsQ.error || benchmarkHistoryQ.error;
   // Reset chart zoom and allocation filter whenever the underlying dataset changes
   const handlePeriod = (p: Period) => {
     setPeriod(p);
+    setSelectedYear(null);
     setZoom(null);
   };
   const handleCurrency = (c: Currency) => {
     setCurrency(c);
     setZoom(null);
-    setAllocationFilter(null);
+    setAllocationFilters([]);
+    setSelectedYear(null);
     setOpenCards({});
   };
   const handleBrokerages = (ids: string[] | null) => {
     setSelectedBrokerages(ids);
     setZoom(null);
-    setAllocationFilter(null);
+    setAllocationFilters([]);
+    setSelectedYear(null);
     setOpenCards({});
   };
   const handleTypes = (ids: string[] | null) => {
     setSelectedTypes(ids);
     setZoom(null);
-    setAllocationFilter(null);
+    setAllocationFilters([]);
+    setSelectedYear(null);
     setOpenCards({});
   };
-  const handleAllocationFilter = (f: AllocationFilter | null) => {
-    setAllocationFilter(f);
+  const handleAllocationFilters = (filters: AllocationFilter[]) => {
+    setAllocationFilters(filters);
     setZoom(null);
+    setSelectedYear(null);
     setOpenCards({});
+  };
+  const handleYear = (y: number | null) => {
+    setSelectedYear(y);
+    setZoom(null);
   };
 
   const nothingSelected = selectedAccounts !== null && selectedAccounts.length === 0;
@@ -227,7 +270,7 @@ export default function App() {
   return (
     <div className="mx-auto max-w-7xl px-6 py-8">
       <div className="mb-6 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <BrokerageFilter
             accounts={accountsQ.data?.accounts}
             selected={selectedBrokerages}
@@ -240,6 +283,43 @@ export default function App() {
             onChange={handleTypes}
             brokerageFilter={selectedBrokerages}
           />
+          <div className="flex items-center gap-2 rounded-full px-3 py-1 text-sm" style={{ background: "color-mix(in srgb, var(--ink) 6%, transparent)" }}>
+            <button
+              onClick={() => {
+                setBenchmarksEnabled((v) => !v);
+                if (!benchmarksEnabled && benchmarksQ.data?.benchmarks.length && selectedBenchmarks.length === 0) {
+                  setSelectedBenchmarks(benchmarksQ.data.benchmarks.map((b) => b.symbol));
+                }
+              }}
+              className="flex items-center gap-1.5"
+              style={{ color: benchmarksEnabled ? "var(--gold)" : "var(--ink-soft)", fontWeight: benchmarksEnabled ? 600 : 400 }}
+            >
+              <span style={{ fontSize: 16 }}>{benchmarksEnabled ? "⊖" : "⊕"}</span>
+              Benchmarks
+            </button>
+            {benchmarksEnabled && benchmarksQ.data?.benchmarks.map((b) => {
+              const active = selectedBenchmarks.includes(b.symbol);
+              return (
+                <label
+                  key={b.symbol}
+                  className="flex cursor-pointer items-center gap-1 text-xs"
+                  style={{ color: active ? "var(--ink)" : "var(--ink-soft)" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={active}
+                    onChange={() => {
+                      setSelectedBenchmarks((prev) =>
+                        active ? prev.filter((s) => s !== b.symbol) : [...prev, b.symbol]
+                      );
+                    }}
+                    className="cursor-pointer"
+                  />
+                  {b.name}
+                </label>
+              );
+            })}
+          </div>
         </div>
         <button
           onClick={() => setDark(!dark)}
@@ -268,11 +348,11 @@ export default function App() {
         <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>
           Select accounts above to view portfolio data.
         </div>
-      ) : allocationFilter && filteredHoldings.length === 0 ? (
+      ) : allocationFilters.length > 0 && filteredHoldings.length === 0 ? (
         <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>
-          No holdings match the selected allocation filter.
+          No holdings match the selected allocation filters.
           <button
-            onClick={() => setAllocationFilter(null)}
+            onClick={() => setAllocationFilters([])}
             className="ml-3 rounded px-2 py-0.5 text-xs"
             style={{ background: "color-mix(in srgb, var(--gold) 18%, transparent)", color: "var(--ink)" }}
           >
@@ -289,8 +369,17 @@ export default function App() {
             onPeriod={handlePeriod}
             method={method}
             onMethod={setMethod}
+            years={availableYears}
+            year={selectedYear}
+            onYear={handleYear}
           />
-          <PerformanceChart history={historyQ.data} zoom={zoom} onZoom={setZoom} method={method} />
+          <PerformanceChart
+            history={historyQ.data}
+            benchmarks={benchmarkHistoryQ.data}
+            zoom={zoom}
+            onZoom={setZoom}
+            method={method}
+          />
           <CollapsibleSection title="Holdings" open={holdingsOpen} onToggle={() => setHoldingsOpen((o) => !o)}>
             <HoldingsTable
               holdings={holdingsQ.isLoading ? undefined : filteredHoldings}
@@ -310,8 +399,8 @@ export default function App() {
         <CollapsibleSection title="Allocation" open={allocationOpen} onToggle={() => setAllocationOpen((o) => !o)}>
           <AllocationSection
             holdings={holdingsQ.data?.holdings}
-            filter={allocationFilter}
-            onFilter={handleAllocationFilter}
+            filters={allocationFilters}
+            onFilters={handleAllocationFilters}
           />
         </CollapsibleSection>
       )}

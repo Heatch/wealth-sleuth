@@ -60,6 +60,9 @@ interface Props {
   onPeriod: (p: Period) => void;
   method: ReturnMethod;
   onMethod: (m: ReturnMethod) => void;
+  years: number[];
+  year: number | null;
+  onYear: (y: number | null) => void;
 }
 
 export default function PortfolioBalance({
@@ -70,12 +73,15 @@ export default function PortfolioBalance({
   onPeriod,
   method,
   onMethod,
+  years,
+  year,
+  onYear,
 }: Props) {
   if (!summary) {
     return <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>Loading portfolio…</div>;
   }
 
-  const ret = summary.returns[PERIOD_KEYS[period]];
+  const ret = summary.returns[year ? "all" : PERIOD_KEYS[period]];
   const retVal = ret ? ret[method] : null;
   const gain = retVal !== null && retVal !== undefined;
   const dayGain = (summary.total_change_today ?? 0) >= 0;
@@ -117,18 +123,43 @@ export default function PortfolioBalance({
           {PERIODS.map((p) => (
             <button
               key={p.key}
-              onClick={() => onPeriod(p.key)}
+              onClick={() => {
+                onYear(null);
+                onPeriod(p.key);
+              }}
               className="rounded px-2.5 py-1 text-sm"
               style={{
-                background: p.key === period ? "color-mix(in srgb, var(--gold) 18%, transparent)" : "transparent",
-                color: p.key === period ? "var(--ink)" : "var(--ink-soft)",
-                fontWeight: p.key === period ? 600 : 400,
+                background: !year && p.key === period ? "color-mix(in srgb, var(--gold) 18%, transparent)" : "transparent",
+                color: !year && p.key === period ? "var(--ink)" : "var(--ink-soft)",
+                fontWeight: !year && p.key === period ? 600 : 400,
               }}
             >
               {p.label}
             </button>
           ))}
         </div>
+
+        {years.length > 0 && (
+          <select
+            value={year ?? ""}
+            onChange={(e) => onYear(e.target.value ? Number(e.target.value) : null)}
+            className="rounded px-2.5 py-1 text-sm"
+            style={{
+              background: year ? "color-mix(in srgb, var(--gold) 18%, transparent)" : "transparent",
+              color: year ? "var(--ink)" : "var(--ink-soft)",
+              fontWeight: year ? 600 : 400,
+              border: "1px solid color-mix(in srgb, var(--ink) 12%, transparent)",
+              cursor: "pointer",
+            }}
+          >
+            <option value="">Year</option>
+            {years.map((y) => (
+              <option key={y} value={y}>
+                {y}
+              </option>
+            ))}
+          </select>
+        )}
 
         <div className="flex gap-1">
           {METHODS.map((m) => (
@@ -163,7 +194,7 @@ export default function PortfolioBalance({
         </div>
 
         <div className="text-2xl tnum" style={{ color: gain && (retVal ?? 0) >= 0 ? "var(--moss)" : "var(--brick)" }}>
-          {fmtPct(retVal)}
+          {year ? `${year}: ` : ""}{fmtPct(retVal)}
         </div>
       </div>
     </section>

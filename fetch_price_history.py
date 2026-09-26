@@ -49,11 +49,11 @@ def is_fresh_enough(df, max_age_days: int = 7) -> bool:
     return (today - latest).days <= max_age_days
 
 
-def fetch_history(ticker: str):
+def fetch_history(ticker: str, auto_adjust: bool = False):
     """Fetch full daily history. Returns DataFrame or None."""
     import yfinance as yf
     try:
-        df = yf.Ticker(ticker).history(period="max", auto_adjust=False)
+        df = yf.Ticker(ticker).history(period="max", auto_adjust=auto_adjust)
     except Exception:
         return None
     if df is None or df.empty or "Close" not in df.columns:
@@ -77,11 +77,11 @@ def update_price_history(
     conn = get_connection(db_path)
     try:
         if only_symbol:
-            q = "SELECT id, symbol, currency, is_cdr FROM securities "
+            q = "SELECT id, symbol, currency, is_cdr, is_benchmark FROM securities "
             q += "WHERE symbol = ? AND (is_cash = 0 OR is_cash IS NULL)"
             rows = conn.execute(q, (only_symbol,)).fetchall()
         else:
-            q = "SELECT id, symbol, currency, is_cdr FROM securities "
+            q = "SELECT id, symbol, currency, is_cdr, is_benchmark FROM securities "
             q += "WHERE is_cash = 0 OR is_cash IS NULL"
             rows = conn.execute(q).fetchall()
 
@@ -92,9 +92,15 @@ def update_price_history(
         for row in rows:
             df = None
             used_ticker = None
-            cands = resolve_ticker_for_history(row["symbol"], row["currency"], row["is_cdr"])
+            is_benchmark = bool(row["is_benchmark"])
+            if is_benchmark:
+                # Benchmark symbols are already valid Yahoo tickers; use total
+                # return (auto_adjust=True) so dividends are reinvested.
+                cands = [row["symbol"]]
+            else:
+                cands = resolve_ticker_for_history(row["symbol"], row["currency"], row["is_cdr"])
             for candidate in cands:
-                df = fetch_history(candidate)
+                df = fetch_history(candidate, auto_adjust=is_benchmark)
                 if df is not None and is_fresh_enough(df):
                     used_ticker = candidate
                     break

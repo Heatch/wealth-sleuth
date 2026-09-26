@@ -6,7 +6,7 @@ from threading import Thread
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import portfolio
+from api.routers import benchmarks, portfolio
 
 
 def _background_price_fetch():
@@ -59,12 +59,14 @@ async def lifespan(app: FastAPI):
     """Startup: consolidate new files, fetch price gaps in background."""
     from config import DB_PATH, DOCUMENTS_DIR
     from consolidate import consolidate, has_file_changes
-    from database import get_connection, init_db
+    from database import get_connection, init_db, ensure_benchmark_securities, migrate_securities_schema
     from api.services.price_gaps import detect_price_gaps, has_gaps
 
     init_db(DB_PATH)
+    migrate_securities_schema(DB_PATH)
     conn = get_connection()
     try:
+        ensure_benchmark_securities(conn)
         if has_file_changes(DOCUMENTS_DIR, conn):
             print("New/changed transaction files detected. Consolidating...")
             conn.close()
@@ -113,6 +115,7 @@ app.add_middleware(
 )
 
 app.include_router(portfolio.router, prefix="/api", tags=["portfolio"])
+app.include_router(benchmarks.router, prefix="/api", tags=["benchmarks"])
 
 
 @app.get("/health")

@@ -55,6 +55,27 @@ export interface PortfolioHistory {
   period_start_value: number | null;
   period_end_value: number | null;
   currency: string;
+  available_years: number[];
+}
+
+export interface Benchmark {
+  symbol: string;
+  name: string;
+  currency: string;
+}
+
+export interface BenchmarkHistory {
+  symbol: string;
+  display: string;
+  series: HistoryPoint[];
+  period_start_value: number | null;
+  period_end_value: number | null;
+  returns: Record<string, PeriodReturns>;
+}
+
+export interface BenchmarksHistoryResponse {
+  benchmarks: Record<string, BenchmarkHistory>;
+  currency: string;
 }
 
 export interface Holding {

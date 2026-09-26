@@ -1,6 +1,8 @@
 ﻿// Thin API client for the FastAPI backend (proxied via vite.config.ts).
 import type {
   Account,
+  Benchmark,
+  BenchmarksHistoryResponse,
   Currency,
   HoldingSort,
   HoldingsResponse,
@@ -32,14 +34,21 @@ function withSymbols(url: string, symbols?: string[] | null): string {
   return url;
 }
 
+function withYear(url: string, year?: number | null): string {
+  if (year) return `${url}&year=${year}`;
+  return url;
+}
+
 export function fetchSummary(
   currency: Currency,
   accounts?: number[] | null,
   symbols?: string[] | null,
+  year?: number | null,
 ): Promise<PortfolioSummary> {
   let url = `/api/portfolio/summary?currency=${currency}`;
   url = withAccounts(url, accounts);
   url = withSymbols(url, symbols);
+  url = withYear(url, year);
   return get<PortfolioSummary>(url);
 }
 
@@ -48,10 +57,12 @@ export function fetchHistory(
   currency: Currency,
   accounts?: number[] | null,
   symbols?: string[] | null,
+  year?: number | null,
 ): Promise<PortfolioHistory> {
   let url = `/api/portfolio/history?period=${period}&currency=${currency}`;
   url = withAccounts(url, accounts);
   url = withSymbols(url, symbols);
+  url = withYear(url, year);
   return get<PortfolioHistory>(url);
 }
 
@@ -70,6 +81,32 @@ export interface AccountsResponse {
 
 export function fetchAccounts(): Promise<AccountsResponse> {
   return get<AccountsResponse>(`/api/accounts`);
+}
+
+export interface BenchmarksResponse {
+  benchmarks: Benchmark[];
+}
+
+export function fetchBenchmarks(): Promise<BenchmarksResponse> {
+  return get<BenchmarksResponse>(`/api/benchmarks`);
+}
+
+export function fetchBenchmarkHistory(
+  benchmarks: string[],
+  period: Period,
+  currency: Currency,
+  accounts?: number[] | null,
+  symbols?: string[] | null,
+  year?: number | null,
+): Promise<BenchmarksHistoryResponse> {
+  if (!benchmarks.length) {
+    return Promise.resolve({ benchmarks: {}, currency });
+  }
+  let url = `/api/benchmarks/history?benchmarks=${encodeURIComponent(benchmarks.join(","))}&period=${period}&currency=${currency}`;
+  url = withAccounts(url, accounts);
+  url = withSymbols(url, symbols);
+  url = withYear(url, year);
+  return get<BenchmarksHistoryResponse>(url);
 }
 
 export interface StatusResponse {

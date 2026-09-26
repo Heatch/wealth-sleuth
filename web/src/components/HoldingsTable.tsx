@@ -47,6 +47,8 @@ type Col = { key: HoldingSort | "shares"; label: string; numeric: boolean; sorta
 const COLS: Col[] = [
   { key: "name", label: "Name", numeric: false, sortable: true },
   { key: "symbol", label: "Symbol", numeric: false, sortable: true },
+  { key: "sector", label: "Sector", numeric: false, sortable: true },
+  { key: "country", label: "Country", numeric: false, sortable: true },
   { key: "shares", label: "Shares", numeric: true, sortable: true },
   { key: "last_price", label: "Last price", numeric: true, sortable: true },
   { key: "value", label: "Value", numeric: true, sortable: true },

@@ -1,5 +1,6 @@
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import type { AllocationDimension, AllocationFilter, Holding } from "../lib/types";
+import { toggleAllocationFilter } from "../lib/allocation";
 
 const PALETTE = [
   "var(--gold)",
@@ -36,11 +37,11 @@ interface PieProps {
   title: string;
   data: { name: string; value: number }[];
   dimension: AllocationDimension;
-  activeValue: string | null;
+  activeValues: Set<string>;
   onSlice: (dimension: AllocationDimension, value: string) => void;
 }
 
-function AllocationPie({ title, data, dimension, activeValue, onSlice }: PieProps) {
+function AllocationPie({ title, data, dimension, activeValues, onSlice }: PieProps) {
   if (!data.length) {
     return (
       <div className="flex flex-col" style={{ height: 220 }}>
@@ -77,7 +78,7 @@ function AllocationPie({ title, data, dimension, activeValue, onSlice }: PieProp
                 key={`cell-${dimension}-${entry.name}`}
                 fill={PALETTE[index % PALETTE.length]}
                 stroke="none"
-                opacity={activeValue === null || activeValue === entry.name ? 1 : 0.35}
+                opacity={activeValues.size === 0 || activeValues.has(entry.name) ? 1 : 0.35}
               />
             ))}
           </Pie>
@@ -102,39 +103,49 @@ function AllocationPie({ title, data, dimension, activeValue, onSlice }: PieProp
 
 interface Props {
   holdings: Holding[] | undefined;
-  filter: AllocationFilter | null;
-  onFilter: (filter: AllocationFilter | null) => void;
+  filters: AllocationFilter[];
+  onFilters: (filters: AllocationFilter[]) => void;
 }
 
-export default function AllocationSection({ holdings, filter, onFilter }: Props) {
+export default function AllocationSection({ holdings, filters, onFilters }: Props) {
   const sectorData = groupBy(holdings ?? [], "sector");
   const countryData = groupBy(holdings ?? [], "country");
 
+  const activeByDimension = (dim: AllocationDimension) =>
+    new Set(filters.filter((f) => f.dimension === dim).map((f) => f.value));
+
   const handleSlice = (dimension: AllocationDimension, value: string) => {
-    if (filter && filter.dimension === dimension && filter.value === value) {
-      onFilter(null);
-      return;
-    }
-    onFilter({ dimension, value });
+    onFilters(toggleAllocationFilter(filters, dimension, value));
   };
 
   return (
     <div>
-      {filter && (
-        <div className="mb-4 flex items-center gap-3 text-sm">
-          <span style={{ color: "var(--ink-soft)" }}>
-            Filtered by{" "}
-            <span style={{ color: "var(--ink)", fontWeight: 600 }}>
-              {filter.dimension === "sector" ? "Sector" : "Country"}
+      {filters.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
+          <span style={{ color: "var(--ink-soft)" }}>Filtered by</span>
+          {filters.map((f) => (
+            <span
+              key={`${f.dimension}-${f.value}`}
+              className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs"
+              style={{ background: "color-mix(in srgb, var(--gold) 18%, transparent)", color: "var(--ink)" }}
+            >
+              <span style={{ fontWeight: 600 }}>{f.dimension === "sector" ? "Sector" : "Country"}</span>
+              : {f.value}
+              <button
+                onClick={() => handleSlice(f.dimension, f.value)}
+                aria-label={`Remove ${f.dimension} ${f.value}`}
+                className="ml-1 leading-none"
+              >
+                ×
+              </button>
             </span>
-            : {filter.value}
-          </span>
+          ))}
           <button
-            onClick={() => onFilter(null)}
+            onClick={() => onFilters([])}
             className="rounded px-2 py-0.5 text-xs"
-            style={{ background: "color-mix(in srgb, var(--gold) 18%, transparent)", color: "var(--ink)" }}
+            style={{ background: "color-mix(in srgb, var(--brick) 12%, transparent)", color: "var(--brick)" }}
           >
-            Clear
+            Clear all
           </button>
         </div>
       )}
@@ -143,14 +154,14 @@ export default function AllocationSection({ holdings, filter, onFilter }: Props)
           title="By Sector"
           data={sectorData}
           dimension="sector"
-          activeValue={filter?.dimension === "sector" ? filter.value : null}
+          activeValues={activeByDimension("sector")}
           onSlice={handleSlice}
         />
         <AllocationPie
           title="By Country"
           data={countryData}
           dimension="country"
-          activeValue={filter?.dimension === "country" ? filter.value : null}
+          activeValues={activeByDimension("country")}
           onSlice={handleSlice}
         />
       </div>

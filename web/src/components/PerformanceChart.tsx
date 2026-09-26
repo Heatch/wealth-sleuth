@@ -1,6 +1,19 @@
 ﻿import { useMemo, useState } from "react";
-import { Area, AreaChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { HistoryPoint, PortfolioHistory, ReturnMethod } from "../lib/types";
+import {
+  Area,
+  AreaChart,
+  Line,
+  ReferenceArea,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import type {
+  BenchmarksHistoryResponse,
+  PortfolioHistory,
+  ReturnMethod,
+} from "../lib/types";
 
 export interface ZoomRange {
   start: string;
@@ -9,6 +22,7 @@ export interface ZoomRange {
 
 interface Props {
   history: PortfolioHistory | undefined;
+  benchmarks: BenchmarksHistoryResponse | undefined;
   zoom: ZoomRange | null;
   onZoom: (z: ZoomRange | null) => void;
   method: ReturnMethod;
@@ -23,24 +37,100 @@ function fmtDate(iso: string): string {
   return new Date(y, m - 1, d).toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
 }
 
-export function zoomedReturn(series: HistoryPoint[], zoom: ZoomRange | null): number | null {
-  const pts = zoom ? series.filter((p) => p.date >= zoom.start && p.date <= zoom.end) : series;
-  if (pts.length < 2) return null;
-  const first = pts[0].value;
-  const last = pts[pts.length - 1].value;
+function fmtPct(v: number | null | undefined): string {
+  if (v === null || v === undefined) return "--";
+  const sign = v >= 0 ? "+" : "";
+  return `${sign}${(v * 100).toFixed(2)}%`;
+}
+
+const BENCHMARK_COLORS: Record<string, string> = {
+  SPY: "var(--moss)",
+  "XIU.TO": "var(--brick)",
+  QQQ: "#5b8cd4",
+};
+
+interface MergedPoint {
+  date: string;
+  portfolio: number | null;
+  return_xirr?: number | null;
+  return_twr?: number | null;
+  net_deposits?: number | null;
+  [key: `benchmark_${string}`]: number | null | undefined;
+  [key: `return_xirr_${string}`]: number | null | undefined;
+  [key: `return_twr_${string}`]: number | null | undefined;
+}
+
+export function mergeData(
+  history: PortfolioHistory | undefined,
+  benchmarks: BenchmarksHistoryResponse | undefined,
+): MergedPoint[] {
+  const byDate = new Map<string, MergedPoint>();
+
+  for (const pt of history?.series ?? []) {
+    byDate.set(pt.date, {
+      date: pt.date,
+      portfolio: pt.value,
+      return_xirr: pt.return_xirr,
+      return_twr: pt.return_twr,
+      net_deposits: pt.net_deposits,
+    });
+  }
+
+  if (benchmarks?.benchmarks) {
+    for (const [symbol, bench] of Object.entries(benchmarks.benchmarks)) {
+      for (const pt of bench.series) {
+        const existing = byDate.get(pt.date);
+        if (existing) {
+          existing[`benchmark_${symbol}`] = pt.value;
+          existing[`return_xirr_${symbol}`] = pt.return_xirr;
+          existing[`return_twr_${symbol}`] = pt.return_twr;
+        } else {
+          byDate.set(pt.date, {
+            date: pt.date,
+            portfolio: null,
+            [`benchmark_${symbol}`]: pt.value,
+            [`return_xirr_${symbol}`]: pt.return_xirr,
+            [`return_twr_${symbol}`]: pt.return_twr,
+          } as MergedPoint);
+        }
+      }
+    }
+  }
+
+  return Array.from(byDate.values()).sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+function seriesReturn(
+  data: MergedPoint[],
+  zoom: ZoomRange | null,
+  dataKey: string,
+): number | null {
+  const pts = zoom ? data.filter((p) => p.date >= zoom.start && p.date <= zoom.end) : data;
+  const values = pts.map((p) => p[dataKey as keyof MergedPoint] as number | null).filter((v) => v !== null && v !== undefined);
+  if (values.length < 2) return null;
+  const first = values[0];
+  const last = values[values.length - 1];
   if (!first) return null;
   return (last - first) / Math.abs(first);
 }
 
-function returnForPoint(pt: HistoryPoint, method: ReturnMethod): number | null | undefined {
-  return method === "xirr" ? pt.return_xirr : pt.return_twr;
+function returnForPoint(pt: MergedPoint, method: ReturnMethod, suffix: string): number | null | undefined {
+  if (suffix === "") {
+    return method === "xirr" ? pt.return_xirr : pt.return_twr;
+  }
+  const key = method === "xirr" ? (`return_xirr_${suffix}` as keyof MergedPoint) : (`return_twr_${suffix}` as keyof MergedPoint);
+  return pt[key] as number | null | undefined;
 }
 
-export default function PerformanceChart({ history, zoom, onZoom, method }: Props) {
+export default function PerformanceChart({ history, benchmarks, zoom, onZoom, method }: Props) {
   const [refLeft, setRefLeft] = useState<string | null>(null);
   const [refRight, setRefRight] = useState<string | null>(null);
 
-  const fullData = useMemo(() => history?.series ?? [], [history]);
+  const fullData = useMemo(() => mergeData(history, benchmarks), [history, benchmarks]);
+  const activeBenchmarks = useMemo(
+    () => (benchmarks ? Object.keys(benchmarks.benchmarks) : []),
+    [benchmarks],
+  );
 
   const data = useMemo(() => {
     let pts = fullData;
@@ -77,8 +167,7 @@ export default function PerformanceChart({ history, zoom, onZoom, method }: Prop
     setRefRight(null);
   }
 
-  const zoomRet = zoomedReturn(fullData, zoom);
-  const returnLabel = method === "xirr" ? "XIRR" : "TWR";
+  const portfolioZoomRet = seriesReturn(fullData, zoom, "portfolio");
 
   return (
     <section className="mt-8">
@@ -86,16 +175,14 @@ export default function PerformanceChart({ history, zoom, onZoom, method }: Prop
         <div className="text-sm" style={{ color: "var(--ink-soft)" }}>
           {zoom ? (
             <>
-              {fmtDate(zoom.start)} — {fmtDate(zoom.end)}:{" "}
+              {fmtDate(zoom.start)} — {fmtDate(zoom.end)}
+              <span style={{ color: "var(--ink-soft)" }}> · value change </span>
               <span
                 className="tnum"
-                style={{ color: (zoomRet ?? 0) >= 0 ? "var(--moss)" : "var(--brick)" }}
+                style={{ color: (portfolioZoomRet ?? 0) >= 0 ? "var(--moss)" : "var(--brick)" }}
               >
-                {zoomRet !== null
-                  ? `${zoomRet >= 0 ? "+" : ""}${(zoomRet * 100).toFixed(2)}%`
-                  : "--"}
-              </span>{" "}
-              <span style={{ color: "var(--ink-soft)" }}>(drag selection)</span>
+                {fmtPct(portfolioZoomRet)}
+              </span>
             </>
           ) : (
             "Drag over the chart to zoom into a period"
@@ -150,9 +237,7 @@ export default function PerformanceChart({ history, zoom, onZoom, method }: Prop
             <Tooltip
               content={({ active, payload, label }) => {
                 if (!active || !payload?.length) return null;
-                const pt = payload[0].payload as HistoryPoint;
-                const ret = returnForPoint(pt, method);
-                const showRet = ret !== null && ret !== undefined;
+                const pt = payload[0].payload as MergedPoint;
                 return (
                   <div
                     style={{
@@ -164,36 +249,67 @@ export default function PerformanceChart({ history, zoom, onZoom, method }: Prop
                     }}
                   >
                     <div style={{ marginBottom: 4 }}>{fmtDate(String(label))}</div>
-                    <div>Value: {fmtMoney(pt.value)}</div>
+                    {payload.map((item) => {
+                      const key = String(item.dataKey);
+                      const isPortfolio = key === "portfolio";
+                      const symbol = isPortfolio ? "" : key.replace("benchmark_", "");
+                      const xirr = returnForPoint(pt, "xirr", symbol);
+                      const twr = returnForPoint(pt, "twr", symbol);
+                      const color = item.color || "var(--gold)";
+                      const name = isPortfolio ? "Portfolio" : benchmarks?.benchmarks[symbol]?.display || symbol;
+                      return (
+                        <div key={key} style={{ marginBottom: 4 }}>
+                          <div>
+                            <span style={{ color }}>●</span>{" "}
+                            <span style={{ fontWeight: 600 }}>{name}</span>: {fmtMoney(Number(item.value))}
+                          </div>
+                          <div className="tnum" style={{ marginLeft: 14, color: "var(--ink-soft)" }}>
+                            <span style={{ fontWeight: method === "xirr" ? 600 : 400, color: "var(--ink)" }}>
+                              XIRR {fmtPct(xirr)}
+                            </span>
+                            {" · "}
+                            <span style={{ fontWeight: method === "twr" ? 600 : 400, color: "var(--ink)" }}>
+                              TWR {fmtPct(twr)}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
                     {pt.net_deposits !== null &&
                       pt.net_deposits !== undefined &&
                       Math.abs(pt.net_deposits) > 0.005 && (
-                        <div>Net deposits: {fmtMoney(pt.net_deposits)}</div>
+                        <div style={{ marginTop: 4, color: "var(--ink-soft)" }}>
+                          Net deposits: {fmtMoney(pt.net_deposits)}
+                        </div>
                       )}
-                    {showRet && (
-                      <div
-                        style={{
-                          color: ret >= 0 ? "var(--moss)" : "var(--brick)",
-                        }}
-                      >
-                        {returnLabel}: {ret >= 0 ? "+" : ""}
-                        {(ret * 100).toFixed(2)}%
-                      </div>
-                    )}
                   </div>
                 );
               }}
             />
             <Area
               type="monotone"
-              dataKey="value"
+              dataKey="portfolio"
               stroke="var(--gold)"
               strokeWidth={2}
               fill="url(#pfFill)"
               dot={false}
               activeDot={{ r: 4, fill: "var(--gold)" }}
               isAnimationActive={false}
+              connectNulls={false}
             />
+            {activeBenchmarks.map((symbol) => (
+              <Line
+                key={symbol}
+                type="monotone"
+                dataKey={`benchmark_${symbol}`}
+                stroke={BENCHMARK_COLORS[symbol] || "#888"}
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4 }}
+                isAnimationActive={false}
+                connectNulls={false}
+              />
+            ))}
             {refLeft && refRight ? (
               <ReferenceArea
                 x1={refLeft}
