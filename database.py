@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS securities (
     is_cdr INTEGER DEFAULT 0,
     exchange TEXT,
     is_cash INTEGER DEFAULT 0,
+    is_benchmark INTEGER DEFAULT 0,
     sector TEXT,
     industry TEXT,
     description TEXT,
@@ -193,6 +194,7 @@ SECURITIES_EXTRA_COLUMNS = {
     "fifty_two_week_high": "REAL",
     "fifty_two_week_low": "REAL",
     "country": "TEXT",
+    "is_benchmark": "INTEGER DEFAULT 0",
 }
 
 
@@ -282,6 +284,7 @@ def get_or_create_security(
     exchange: Optional[str] = None,
     is_cdr: int = 0,
     is_cash: int = 0,
+    is_benchmark: int = 0,
 ) -> int:
     """Get existing security id or create new one."""
     row = conn.execute(
@@ -291,12 +294,51 @@ def get_or_create_security(
         return row["id"]
     cursor = conn.execute(
         """
-        INSERT INTO securities (symbol, name, currency, asset_class, exchange, is_cdr, is_cash)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO securities (symbol, name, currency, asset_class, exchange, is_cdr, is_cash, is_benchmark)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (symbol, name, currency, asset_class, exchange, is_cdr, is_cash),
+        (symbol, name, currency, asset_class, exchange, is_cdr, is_cash, is_benchmark),
     )
     return cursor.lastrowid
+
+
+BENCHMARKS = {
+    "SPY": {
+        "name": "SPDR S&P 500 ETF Trust",
+        "currency": "USD",
+        "display": "S&P 500",
+    },
+    "XIU.TO": {
+        "name": "iShares S&P/TSX 60 Index ETF",
+        "currency": "CAD",
+        "display": "TSX 60",
+    },
+    "QQQ": {
+        "name": "Invesco QQQ Trust",
+        "currency": "USD",
+        "display": "NASDAQ 100",
+    },
+}
+
+
+def ensure_benchmark_securities(conn: sqlite3.Connection) -> None:
+    """Create or update the three benchmark securities and mark them as benchmarks."""
+    for symbol, meta in BENCHMARKS.items():
+        row = conn.execute("SELECT id FROM securities WHERE symbol = ?", (symbol,)).fetchone()
+        if row:
+            conn.execute(
+                "UPDATE securities SET is_benchmark = 1, name = ?, currency = ? WHERE id = ?",
+                (meta["name"], meta["currency"], row["id"]),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO securities (symbol, name, currency, is_benchmark, asset_class)
+                VALUES (?, ?, ?, 1, 'benchmark')
+                """,
+                (symbol, meta["name"], meta["currency"]),
+            )
+    conn.commit()
 
 
 def update_security_name(

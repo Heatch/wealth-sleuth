@@ -188,6 +188,155 @@ class ApiReturnTests(unittest.TestCase):
         summary = self.client.get(f"/api/portfolio/summary?currency=CAD&symbols={','.join(symbols)}").json()
         self.assertAlmostEqual(summary["total_value"], expected, places=4)
 
+    def test_benchmarks_list(self):
+        """Benchmark endpoint returns the three configured indices."""
+        res = self.client.get("/api/benchmarks")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("benchmarks", data)
+        symbols = {b["symbol"] for b in data["benchmarks"]}
+        self.assertTrue(symbols.issuperset({"SPY", "XIU.TO", "QQQ"}))
+
+    def test_benchmark_history_schema(self):
+        """Benchmark history returns simulated series and returns."""
+        res = self.client.get("/api/benchmarks/history?benchmarks=SPY&period=all&currency=CAD")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("benchmarks", data)
+        self.assertIn("SPY", data["benchmarks"])
+        spy = data["benchmarks"]["SPY"]
+        self.assertIn("series", spy)
+        self.assertIn("returns", spy)
+        if spy["series"]:
+            pt = spy["series"][0]
+            self.assertIn("return_twr", pt)
+            self.assertIn("return_xirr", pt)
+            self.assertAlmostEqual(pt["return_twr"], 0.0, places=6)
+
+    def test_benchmark_matches_portfolio_period_start(self):
+        """Each benchmark starts at the portfolio value for that period."""
+        for period in ("1m", "1y", "all"):
+            with self.subTest(period=period):
+                hist = self.client.get(f"/api/portfolio/history?period={period}&currency=CAD")
+                bench = self.client.get(
+                    f"/api/benchmarks/history?benchmarks=SPY,XIU.TO,QQQ&period={period}&currency=CAD"
+                )
+                self.assertEqual(hist.status_code, 200, hist.text)
+                self.assertEqual(bench.status_code, 200, bench.text)
+                portfolio = hist.json()["series"]
+                if len(portfolio) < 2:
+                    self.skipTest(f"No portfolio series for {period}")
+                for symbol, data in bench.json()["benchmarks"].items():
+                    series = data["series"]
+                    self.assertGreaterEqual(len(series), 2, symbol)
+                    self.assertEqual(series[0]["date"], portfolio[0]["date"], symbol)
+                    self.assertAlmostEqual(series[0]["value"], portfolio[0]["value"], places=2)
+                    self.assertAlmostEqual(series[0]["return_twr"], 0.0, places=6)
+                    self.assertIsNotNone(series[-1]["return_twr"])
+                    self.assertIsNotNone(series[-1]["return_xirr"])
+
+    def test_benchmark_year_matches_portfolio_year_start(self):
+        hist = self.client.get("/api/portfolio/history?period=all&currency=CAD&year=2024")
+        bench = self.client.get(
+            "/api/benchmarks/history?benchmarks=SPY&period=all&currency=CAD&year=2024"
+        )
+        self.assertEqual(hist.status_code, 200)
+        self.assertEqual(bench.status_code, 200)
+        portfolio = hist.json()["series"]
+        spy = bench.json()["benchmarks"]["SPY"]["series"]
+        self.assertTrue(spy)
+        self.assertEqual(spy[0]["date"], portfolio[0]["date"])
+        self.assertAlmostEqual(spy[0]["value"], portfolio[0]["value"], places=2)
+        self.assertTrue(all(p["date"].startswith("2024-") for p in spy))
+        self.assertAlmostEqual(spy[0]["return_twr"], 0.0, places=6)
+        # Deposits during the year must not be booked as index performance.
+        twr = spy[-1]["return_twr"]
+        self.assertIsNotNone(twr)
+        self.assertGreater(twr, -0.5)
+        self.assertLess(twr, 1.0)
+        naive = (spy[-1]["value"] - spy[0]["value"]) / abs(spy[0]["value"])
+        self.assertNotAlmostEqual(twr, naive, places=2)
+
+    def test_portfolio_history_year_filter(self):
+        """Year parameter restricts history to a single calendar year."""
+        res = self.client.get("/api/portfolio/history?period=all&currency=CAD&year=2024")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(len(data["series"]) > 0)
+        self.assertTrue(all(p["date"].startswith("2024-") for p in data["series"]))
+
+    def test_portfolio_summary_year_filter(self):
+        """Year parameter snapshots summary at the end of the chosen year."""
+        res = self.client.get("/api/portfolio/summary?currency=CAD&year=2024")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["as_of_date"].startswith("2024-"))
+        self.assertIn("all", data["returns"])
+        self.assertIsNotNone(data["returns"]["all"]["twr"])
+
+    def _disnat_usd_accounts(self):
+        accounts = self.client.get("/api/accounts").json()["accounts"]
+        return [
+            a
+            for a in accounts
+            if a["brokerage"].lower() == "disnat" and a["currency"] == "USD"
+        ]
+
+    def test_disnat_usd_xirr_bounded(self):
+        """Security transfers into a USD sub-account are real cash flows.
+
+        A TFSA USD account that receives DLR transfers (Nobert's Gambit) must
+        not show a nonsensical all-time XIRR (e.g. +2034%) from treating those
+        transfers as investment gain instead of deposits.
+        """
+        accounts = self._disnat_usd_accounts()
+        if not accounts:
+            self.skipTest("No Disnat USD accounts")
+        for a in accounts:
+            with self.subTest(account_id=a["id"], type=a["account_type"]):
+                res = self.client.get(
+                    f"/api/portfolio/summary?currency=CAD&accounts={a['id']}"
+                )
+                self.assertEqual(res.status_code, 200)
+                xirr = res.json()["returns"]["all"]["xirr"]
+                self.assertIsNotNone(xirr)
+                self.assertGreater(xirr, -1.0)
+                self.assertLess(xirr, 5.0)
+
+    def test_disnat_usd_benchmark_tracks_portfolio(self):
+        """A USD account's benchmark must stay in the portfolio's magnitude.
+
+        Before the fix, the S&P 500 benchmark for a USD non-reg account could
+        sit near $36 while the portfolio was worth hundreds, because a DLR
+        transfer-in was not reinvested into the index.
+        """
+        accounts = self._disnat_usd_accounts()
+        if not accounts:
+            self.skipTest("No Disnat USD accounts")
+        for a in accounts:
+            with self.subTest(account_id=a["id"], type=a["account_type"]):
+                hist = self.client.get(
+                    f"/api/portfolio/history?period=all&currency=CAD&accounts={a['id']}"
+                )
+                bench = self.client.get(
+                    f"/api/benchmarks/history?benchmarks=SPY&period=all&currency=CAD&accounts={a['id']}"
+                )
+                self.assertEqual(hist.status_code, 200)
+                self.assertEqual(bench.status_code, 200)
+                portfolio = hist.json()["series"]
+                spy = bench.json()["benchmarks"]["SPY"]["series"]
+                if len(portfolio) < 2 or len(spy) < 2:
+                    continue
+                # Start values must match exactly.
+                self.assertEqual(spy[0]["date"], portfolio[0]["date"])
+                self.assertAlmostEqual(spy[0]["value"], portfolio[0]["value"], places=2)
+                # The benchmark must track the same order of magnitude, not be
+                # ~10x smaller from a missed transfer-in.
+                max_pv = max(p["value"] for p in portfolio)
+                max_spy = max(p["value"] for p in spy)
+                self.assertGreater(max_pv, 0.0)
+                self.assertLess(abs(max_spy - max_pv) / max_pv, 10.0)
+
 
 if __name__ == "__main__":
     unittest.main()

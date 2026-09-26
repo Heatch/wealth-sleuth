@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.deps import get_db, parse_account_ids, parse_symbols, validate_currency, validate_period
+from api.deps import get_db, parse_account_ids, parse_symbols, validate_currency, validate_period, validate_year
 from api.models import AccountsResponse, Account, HoldingsResponse, Holding, HoldingsTotals, PortfolioHistory, HistoryPoint, PortfolioSummary, PeriodReturns
 from api.services import fx as fx_service
 from api.services import returns as returns_service
@@ -68,39 +68,67 @@ def get_summary(
     currency: str = Query("CAD"),
     accounts: str = Query(None),
     symbols: str = Query(None),
+    year: Optional[str] = Query(None),
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Current value, daily change, and returns for every period."""
+    """Current value, daily change, and returns for every period.
+
+    If *year* is provided, the snapshot is taken at the last trading day of
+    that year and the return displayed is for the full calendar year.
+    """
     try:
         cur = validate_currency(currency)
         account_ids = parse_account_ids(accounts)
         symbol_list = parse_symbols(symbols)
+        yr = validate_year(year)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     security_ids = _resolve_security_ids(conn, symbol_list)
-    series, _flows, cash_total, _undated, _undated_dep, _deposits, _daily_returns = valuation_service.daily_portfolio_values_cached(
+    series, flows, cash_total, _undated, undated_dep, deposits, daily_returns = valuation_service.daily_portfolio_values_cached(
         cur, account_ids, security_ids
     )
     if not series:
         raise HTTPException(status_code=404, detail="No portfolio data")
-    end_value = series[-1][1]
-    prev_value = series[-2][1] if len(series) >= 2 else end_value
-    change = end_value - prev_value
-    change_pct = (change / abs(prev_value)) if prev_value else None
-    fx_rate, as_of = fx_service.get_latest_fx_rate(conn)
-    returns_result = returns_service.portfolio_returns_cached(cur, account_ids, security_ids)
-    raw = returns_result["periods"]
-    mapped = {_period_key(k): _to_period_returns(v) for k, v in raw.items()}
+
+    if yr:
+        end_bound = f"{yr}-12-31"
+        year_series = [(d, v) for d, v in series if d <= end_bound]
+        if len(year_series) < 2:
+            raise HTTPException(status_code=404, detail=f"No data for {yr}")
+        end_value = year_series[-1][1]
+        prev_value = year_series[-2][1]
+        change = end_value - prev_value
+        change_pct = (change / abs(prev_value)) if prev_value else None
+        as_of = year_series[-1][0]
+        per, _hist = returns_service.returns_for_range(
+            series, flows, deposits, undated_dep,
+            f"{yr}-01-01", end_bound,
+            segment_mode=security_ids is not None,
+            daily_returns=daily_returns,
+        )
+        mapped = {"m1": PeriodReturns(), "m6": PeriodReturns(), "ytd": PeriodReturns(),
+                  "y1": PeriodReturns(), "y3": PeriodReturns(), "all": PeriodReturns(**per)}
+    else:
+        end_value = series[-1][1]
+        prev_value = series[-2][1] if len(series) >= 2 else end_value
+        change = end_value - prev_value
+        change_pct = (change / abs(prev_value)) if prev_value else None
+        as_of = series[-1][0]
+        returns_result = returns_service.portfolio_returns_cached(cur, account_ids, security_ids)
+        raw = returns_result["periods"]
+        mapped = {_period_key(k): _to_period_returns(v) for k, v in raw.items()}
+
+    fx_rate, _ = fx_service.get_latest_fx_rate(conn)
     return PortfolioSummary(
         total_value=end_value,
         total_change_today=change,
         total_change_today_pct=change_pct,
-        as_of_date=series[-1][0],
+        as_of_date=as_of,
         fx_rate=fx_rate,
         currency=cur,
         returns=mapped,
-        cash_total=None if security_ids else cash_total,
+        cash_total=None if security_ids or yr else cash_total,
     )
 
 
@@ -110,6 +138,7 @@ def get_history(
     currency: str = Query("CAD"),
     accounts: str = Query(None),
     symbols: str = Query(None),
+    year: Optional[str] = Query(None),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Time series of portfolio value for the chart."""
@@ -118,13 +147,40 @@ def get_history(
         cur = validate_currency(currency)
         account_ids = parse_account_ids(accounts)
         symbol_list = parse_symbols(symbols)
+        yr = validate_year(year)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     security_ids = _resolve_security_ids(conn, symbol_list)
-    returns_result = returns_service.portfolio_returns_cached(cur, account_ids, security_ids)
-    points_data = returns_result["history"].get(per, [])
+
+    if yr:
+        series, flows, _cash, _undated, undated_dep, deposits, daily_returns = valuation_service.daily_portfolio_values_cached(
+            cur, account_ids, security_ids
+        )
+        if not series:
+            raise HTTPException(status_code=404, detail="No portfolio data")
+        per_data, hist = returns_service.returns_for_range(
+            series, flows, deposits, undated_dep,
+            f"{yr}-01-01", f"{yr}-12-31",
+            segment_mode=security_ids is not None,
+            daily_returns=daily_returns,
+        )
+        points_data = hist
+    else:
+        returns_result = returns_service.portfolio_returns_cached(cur, account_ids, security_ids)
+        points_data = returns_result["history"].get(per, [])
+
     if not points_data:
         raise HTTPException(status_code=404, detail="No portfolio data")
+
+    # Full series is needed to offer the year filter even when a specific
+    # period or year is currently selected.
+    full_series, _flows2, _c2, _u2, _ud2, _d2, _dr2 = valuation_service.daily_portfolio_values_cached(
+        cur, account_ids, security_ids
+    )
+    available_years = sorted({
+        int(d[:4]) for d, _ in full_series if d and len(d) >= 4
+    })
+
     points = [
         HistoryPoint(
             date=p["date"],
@@ -140,6 +196,7 @@ def get_history(
         period_start_value=points[0].value if points else None,
         period_end_value=points[-1].value if points else None,
         currency=cur,
+        available_years=available_years,
     )
 
 
@@ -173,7 +230,7 @@ def get_holdings(
         "JOIN accounts a ON h.account_id = a.id "
         "JOIN brokerages b ON a.brokerage_id = b.id "
         "JOIN securities s ON h.security_id = s.id "
-        "WHERE (s.is_cash = 0 OR s.is_cash IS NULL)"
+        "WHERE (s.is_cash = 0 OR s.is_cash IS NULL) AND (s.is_benchmark = 0 OR s.is_benchmark IS NULL)"
     )
     params: list = []
     if account_ids:

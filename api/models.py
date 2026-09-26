@@ -46,6 +46,7 @@ class PortfolioHistory(BaseModel):
     period_start_value: Optional[float] = None
     period_end_value: Optional[float] = None
     currency: str
+    available_years: list[int] = []
 
 
 class Holding(BaseModel):

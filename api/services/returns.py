@@ -49,6 +49,11 @@ def slice_series(series: list, start: str) -> list:
     return [(d, v) for d, v in series if d >= start]
 
 
+def slice_series_range(series: list, start: str, end: str) -> list:
+    """Return [(date, value)] for dates within [start, end]."""
+    return [(d, v) for d, v in series if start <= d <= end]
+
+
 def _years_between(dates: list[date], base: date) -> list[float]:
     return [(d - base).days / 365.0 for d in dates]
 
@@ -332,6 +337,53 @@ def point_returns(
     return [{"xirr": None, "twr": None} for _ in range(first_idx)] + results
 
 
+def returns_for_range(
+    series: list,
+    flows: dict,
+    deposits: dict,
+    undated_dep: float,
+    start: str,
+    end: str,
+    segment_mode: bool = False,
+    daily_returns: Optional[dict] = None,
+) -> tuple[dict, list]:
+    """Compute XIRR/TWR and chart history for an arbitrary date range."""
+    sub = slice_series_range(series, start, end)
+    if len(sub) < 2:
+        return {"xirr": None, "twr": None}, []
+
+    pret = point_returns(
+        sub, flows,
+        handle_zero_start=segment_mode,
+        segment_mode=segment_mode,
+        daily_returns=daily_returns,
+    )
+
+    cum = undated_dep
+    cum_map: dict[str, float] = {}
+    for d, _ in sub:
+        cum += deposits.get(d, 0.0) or 0.0
+        cum_map[d] = cum
+
+    history = [
+        {
+            "date": d,
+            "value": v,
+            "net_deposits": cum_map[d],
+            "return_xirr": r["xirr"],
+            "return_twr": r["twr"],
+        }
+        for (d, v), r in zip(sub, pret)
+    ]
+    per = period_returns(
+        sub, flows,
+        handle_zero_start=segment_mode,
+        segment_mode=segment_mode,
+        daily_returns=daily_returns,
+    )
+    return per, history
+
+
 def portfolio_returns(
     series: list,
     flows: dict,
@@ -401,8 +453,8 @@ def portfolio_returns_cached(
 
     acct_key = tuple(sorted(account_ids)) if account_ids else "all"
     sec_key = tuple(sorted(security_ids)) if security_ids else "all"
-    # v4 bump: slice TWR is a holding-period compound, not (end - start) / start.
-    key = f"returns_v7_{currency}_{acct_key}_{sec_key}"
+    # v8 bump: security transfers now count as cash flows when accounts are filtered.
+    key = f"returns_v8_{currency}_{acct_key}_{sec_key}"
     cached = cache.get(key)
     if cached is not None:
         return cached

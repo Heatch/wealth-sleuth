@@ -364,14 +364,18 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None, security_ids=
                     and t["quantity"]
                 ):
                     # Security transfer (e.g., Nobert's Gambit journal): value the
-                    # shares at market price so the destination account shows the
-                    # economic deposit. Kept OUT of `flows` (TWR/MWR untouched).
+                    # shares at market price. When accounts are filtered, a
+                    # transfer across accounts is real money in/out, so it must
+                    # count as a cash flow for XIRR and benchmark simulation.
+                    # In the all-accounts view the paired in/out legs cancel.
                     price = price_on(price_index, price_map, t["security_id"], d)
                     if price is not None:
                         sec = secs.get(t["security_id"])
                         if sec:
                             val = t["quantity"] * price
-                            day_dep += convert(val, sec["currency"], currency, fx_rate)
+                            converted = convert(val, sec["currency"], currency, fx_rate)
+                            day_flow += converted
+                            day_dep += converted
             else:
                 # Segment mode: the slice's cash flows for returns are the
                 # signed net amounts of its transactions (buys are money put
@@ -434,8 +438,8 @@ def daily_portfolio_values_cached(currency="CAD", account_ids=None, security_ids
 
     acct_key = tuple(sorted(account_ids)) if account_ids else "all"
     sec_key = tuple(sorted(security_ids)) if security_ids else "all"
-    # v4 bump: settlement-dated cash flows + holding-period daily returns.
-    key = f"valuation_v5_{currency}_{acct_key}_{sec_key}"
+    # v6 bump: security transfers now count as cash flows when accounts are filtered.
+    key = f"valuation_v6_{currency}_{acct_key}_{sec_key}"
     cached = cache.get(key)
     if cached is not None:
         return cached

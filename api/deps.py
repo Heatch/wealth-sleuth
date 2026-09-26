@@ -44,6 +44,19 @@ def validate_period(period: str) -> str:
     return p
 
 
+def validate_year(year: Optional[str]) -> Optional[int]:
+    """Validate a calendar-year filter."""
+    if not year:
+        return None
+    try:
+        y = int(year)
+    except ValueError:
+        raise ValueError("year must be a four-digit integer")
+    if y < 1900 or y > 2100:
+        raise ValueError("year out of range")
+    return y
+
+
 def parse_account_ids(accounts: Optional[str]) -> Optional[list[int]]:
     """Parse comma-separated account IDs. None/empty means all accounts."""
     if not accounts:
