@@ -331,6 +331,12 @@ def parse_disnat(filepath: Path, account_type: str) -> list[Transaction]:
         net_amount = safe_float(row.get("Settlement Amount"))
         commission = safe_float(row.get("Commission Paid"))
 
+        # Disnat exports repeat the position's share count in the "Quantity"
+        # column for non-trade rows (dividends, withholding tax, cancellations).
+        # Only actual trades (buy/sell/transfer) carry a meaningful quantity.
+        if normalized_type not in ("buy", "sell", "transfer"):
+            quantity = 0.0
+
         if normalized_type == "deposit" and quantity == 0:
             quantity = abs(net_amount)
 

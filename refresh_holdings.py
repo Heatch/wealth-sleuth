@@ -18,6 +18,7 @@ from typing import Optional
 
 from config import DB_PATH
 from database import get_connection
+from spinoffs import spinoff_adjustments
 
 # Threshold below which a holding is treated as zero (floating-point dust
 # from sequential sell cost-basis reduction and SUM aggregation).
@@ -104,11 +105,12 @@ def refresh_security_holdings(conn: sqlite3.Connection) -> int:
         FROM transactions t
         JOIN securities s ON t.security_id = s.id
         WHERE (s.is_cash = 0 OR s.is_cash IS NULL)
-          AND t.type IN ('buy', 'sell', 'transfer')
+          AND t.type IN ('buy', 'sell', 'transfer', 'other')
         """
     ).fetchall()
 
     inserted = 0
+    parent_scales, child_costs = spinoff_adjustments(conn)
     for row in rows:
         account_id = row["account_id"]
         security_id = row["security_id"]
@@ -118,7 +120,7 @@ def refresh_security_holdings(conn: sqlite3.Connection) -> int:
             """
             SELECT date, type, quantity, net_amount
             FROM transactions
-            WHERE account_id = ? AND security_id = ? AND type IN ('buy', 'sell', 'transfer')
+            WHERE account_id = ? AND security_id = ? AND type IN ('buy', 'sell', 'transfer', 'other')
             ORDER BY date, id
             """,
             (account_id, security_id),
@@ -130,6 +132,11 @@ def refresh_security_holdings(conn: sqlite3.Connection) -> int:
         first_date = None
         last_date = None
 
+        # Spinoff hooks for this (account, security).
+        scale_info = parent_scales.get((account_id, security_id))
+        scale_applied = False
+        child_info = child_costs.get((account_id, security_id))
+
         for txn in txns:
             txn_type = txn["type"]
             txn_qty = txn["quantity"]
@@ -140,6 +147,15 @@ def refresh_security_holdings(conn: sqlite3.Connection) -> int:
                 first_date = txn_date
             if txn_date:
                 last_date = txn_date
+
+            # Spinoff: once the stream reaches the effective date, scale down
+            # the cost held at that point (the moved slice now belongs to
+            # the child security).
+            if scale_info and not scale_applied and (txn_date or "") >= scale_info[0]:
+                total_cost *= scale_info[1]
+                if quantity > 0:
+                    avg_cost = total_cost / quantity
+                scale_applied = True
 
             if txn_type == "buy":
                 # Inflow: add quantity and cost
@@ -175,6 +191,33 @@ def refresh_security_holdings(conn: sqlite3.Connection) -> int:
                 else:
                     avg_cost = 0.0
                     total_cost = 0.0
+
+            elif txn_type == "other" and not txn_net:
+                # Corporate action (stock split / spinoff) with no cash
+                # component. A spinoff receipt carries the slice of the
+                # parent's basis allocated to the child; otherwise quantity
+                # adjusts without changing total cost (a 4:1 split keeps
+                # total cost but divides per-share cost by 4). Rows with a
+                # nonzero net_amount are cash distributions whose quantity
+                # column just repeats the position size (Disnat exports);
+                # their cash is handled by the cash-holdings calculation.
+                qty_in = txn_qty if txn_qty else 0.0
+                if quantity <= 1e-9 and qty_in > 0 and child_info and (txn_date or "") >= child_info[0]:
+                    total_cost += qty_in * child_info[1]
+                quantity += qty_in
+                if quantity > 0:
+                    avg_cost = total_cost / quantity
+                else:
+                    avg_cost = 0.0
+                    total_cost = 0.0
+
+        # Spinoff: if no later transaction crossed the effective date,
+        # scale the remaining cost now.
+        if scale_info and not scale_applied:
+            total_cost *= scale_info[1]
+            if quantity > 0:
+                avg_cost = total_cost / quantity
+            scale_applied = True
 
         if abs(quantity) > GHOST_THRESHOLD:
             conn.execute(

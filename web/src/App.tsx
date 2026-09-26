@@ -16,6 +16,7 @@ import CollapsibleSection from "./components/CollapsibleSection";
 import HoldingsTable from "./components/HoldingsTable";
 import PerformanceChart, { type ZoomRange } from "./components/PerformanceChart";
 import PortfolioBalance from "./components/PortfolioBalance";
+import RecordsSection from "./components/RecordsSection";
 import StatusBanner from "./components/StatusBanner";
 import TFSABanner from "./components/TFSABanner";
 
@@ -29,6 +30,7 @@ export default function App() {
   const [allocationFilter, setAllocationFilter] = useState<AllocationFilter | null>(null);
   const [holdingsOpen, setHoldingsOpen] = useState(true);
   const [allocationOpen, setAllocationOpen] = useState(true);
+  const [recordsOpen, setRecordsOpen] = useState(true);
   const [openCards, setOpenCards] = useState<Record<string, Holding>>({});
   const [birthYear, setBirthYear] = useState<number>(() => {
     if (typeof window === "undefined") return 2005;
@@ -313,6 +315,9 @@ export default function App() {
           />
         </CollapsibleSection>
       )}
+      <CollapsibleSection title="Records" open={recordsOpen} onToggle={() => setRecordsOpen((o) => !o)}>
+        <RecordsSection />
+      </CollapsibleSection>
       <div className="mt-8 text-xs" style={{ color: "var(--ink-soft)" }}>
         Prices via yfinance. Returns computed from full transaction history.
       </div>

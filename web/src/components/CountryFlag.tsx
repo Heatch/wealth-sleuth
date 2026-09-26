@@ -1,4 +1,4 @@
-import ReactCountryFlag from "react-country-flag";
+import * as FlagIcons from "country-flag-icons/react/3x2";
 
 interface Props {
   country: string | null | undefined;
@@ -6,10 +6,12 @@ interface Props {
 }
 
 // Map common full country names (as stored in the DB / returned by yfinance)
-// to ISO 3166-1 alpha-2 codes used by react-country-flag.
+// to ISO 3166-1 alpha-2 codes used by country-flag-icons.
 const NAME_TO_CODE: Record<string, string> = {
   canada: "CA",
   "united states": "US",
+  "united states of america": "US",
+  usa: "US",
   "united kingdom": "GB",
   uk: "GB",
   germany: "DE",
@@ -126,27 +128,20 @@ export default function CountryFlag({ country, size = 16 }: Props) {
   if (!code) {
     return <FallbackFlag code="??" size={size} />;
   }
+  const FlagComponent = (FlagIcons as Record<string, React.ComponentType<any> | undefined>)[code];
+  if (!FlagComponent) {
+    return <FallbackFlag code={code} size={size} />;
+  }
+  // country-flag-icons 3:2 flags use viewBox "0 0 513 342", so height is 2/3
+  // of width. Setting both explicitly avoids any SVG stretching/distortion.
   const h = Math.round((size * 2) / 3);
   return (
-    <span
-      className="inline-block shrink-0 overflow-hidden"
-      style={{
-        width: size,
-        height: h,
-        filter: "saturate(0.88) contrast(0.95)",
-      }}
+    <FlagComponent
+      width={size}
+      height={h}
+      style={{ display: "inline-block", flexShrink: 0, filter: "saturate(0.88) contrast(0.95)" }}
       aria-label={country || code}
-      role="img"
-    >
-      <ReactCountryFlag
-        countryCode={code}
-        svg
-        style={{
-          width: size,
-          height: h,
-        }}
-        title={country || code}
-      />
-    </span>
+      title={country || code}
+    />
   );
 }

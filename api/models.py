@@ -114,6 +114,38 @@ class TfsaSummary(BaseModel):
     pct_used: float
 
 
+class Record(BaseModel):
+    account_id: int
+    brokerage: str
+    account_type: str
+    security_id: int
+    symbol: str
+    name: Optional[str] = None
+    currency: str
+    sector: Optional[str] = None
+    country: Optional[str] = None
+    is_open: bool
+    buy_date: str
+    sell_date: Optional[str] = None
+    quantity: float
+    buy_price: float
+    sell_price: Optional[float] = None
+    cost_basis: float
+    proceeds_or_value: float
+    gain_amount: float
+    gain_pct: float
+    gain_amount_cad: float
+    gain_pct_cad: float
+    duration_days: int
+    duration_label: str
+
+
+class RecordsResponse(BaseModel):
+    best: list[Record]
+    worst: list[Record]
+    sort_by: str
+
+
 class SecurityDetail(BaseModel):
     """Full company/security info shown in the expanded company card."""
 

@@ -101,6 +101,13 @@ def apply_txn(t, positions, cash):
         positions[(acct, sid)] = positions.get((acct, sid), 0.0) - abs(qty)
     elif ttype == "transfer" and sid is not None:
         positions[(acct, sid)] = positions.get((acct, sid), 0.0) + qty
+    elif ttype == "other" and sid is not None and net == 0:
+        # Corporate action (stock split / spinoff) with no cash component:
+        # add the received shares. Rows with a nonzero net_amount are cash
+        # distributions (already reflected in `cash` above) whose quantity
+        # column just repeats the position size, so they must not change
+        # share counts.
+        positions[(acct, sid)] = positions.get((acct, sid), 0.0) + qty
     if ttype in ("deposit", "withdrawal"):
         return net
     return 0.0

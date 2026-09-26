@@ -45,6 +45,12 @@ function fmtPct(v: number | null | undefined): string {
   return `${sign}${(v * 100).toFixed(2)}%`;
 }
 
+function fmtYield(v: number | null | undefined): string {
+  // Dividend yields are always non-negative; no sign prefix.
+  if (v === null || v === undefined) return "--";
+  return `${(v * 100).toFixed(2)}%`;
+}
+
 function fmtRatio(v: number | null | undefined): string {
   if (v === null || v === undefined) return "--";
   return v.toFixed(2);
@@ -128,7 +134,7 @@ export default function CompanyCard({ holding, currency, onClose, embedded }: Pr
         <Stat label="Last price" value={fmtMoney(detail?.last_price ?? holding.current_price, holding.currency)} />
         <Stat label="Market cap" value={fmtCompactMoney(detail?.market_cap ?? holding.market_cap)} />
         <Stat label="P/E (trailing)" value={fmtRatio(detail?.trailing_pe ?? holding.trailing_pe)} />
-        <Stat label="Div yield" value={fmtPct(detail?.dividend_yield ?? holding.dividend_yield)} />
+        <Stat label="Div yield" value={fmtYield(detail?.dividend_yield ?? holding.dividend_yield)} />
         <Stat label="Sector" value={detail?.sector ?? holding.sector ?? "--"} />
         <Stat label="Industry" value={detail?.industry ?? holding.industry ?? "--"} />
         <Stat label="Country" value={detail?.country ?? holding.country ?? "--"} />

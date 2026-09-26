@@ -27,6 +27,12 @@ function fmtPct(v: number | null | undefined): string {
   return `${sign}${(v * 100).toFixed(2)}%`;
 }
 
+function fmtYield(v: number | null | undefined): string {
+  // Dividend yields are always non-negative; no sign prefix.
+  if (v === null || v === undefined) return "--";
+  return `${(v * 100).toFixed(2)}%`;
+}
+
 function fmtQty(v: number): string {
   const t = v.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
   return t === "" ? "0" : t;
@@ -140,7 +146,7 @@ export default function HoldingsTable({
                   </td>
                   <td className="py-2 pr-3 text-right">{fmtCompactMoney(h.market_cap)}</td>
                   <td className="py-2 pr-3 text-right">{fmtRatio(h.trailing_pe)}</td>
-                  <td className="py-2 pr-3 text-right">{fmtPct(h.dividend_yield)}</td>
+                  <td className="py-2 pr-3 text-right">{fmtYield(h.dividend_yield)}</td>
                   <td className="py-2 text-right">
                     {h.weight !== null && h.weight !== undefined ? `${(h.weight * 100).toFixed(1)}%` : "--"}
                   </td>

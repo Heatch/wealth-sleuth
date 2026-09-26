@@ -153,6 +153,38 @@ export interface TfsaSummary {
   pct_used: number;
 }
 
+export interface TradeRecord {
+  account_id: number;
+  brokerage: string;
+  account_type: string;
+  security_id: number;
+  symbol: string;
+  name: string | null;
+  currency: string;
+  sector: string | null;
+  country: string | null;
+  is_open: boolean;
+  buy_date: string;
+  sell_date: string | null;
+  quantity: number;
+  buy_price: number;
+  sell_price: number | null;
+  cost_basis: number;
+  proceeds_or_value: number;
+  gain_amount: number;
+  gain_pct: number;
+  gain_amount_cad: number;
+  gain_pct_cad: number;
+  duration_days: number;
+  duration_label: string;
+}
+
+export interface RecordsResponse {
+  best: TradeRecord[];
+  worst: TradeRecord[];
+  sort_by: string;
+}
+
 export interface Account {
   id: number;
   brokerage: string;

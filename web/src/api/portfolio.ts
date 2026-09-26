@@ -7,6 +7,7 @@ import type {
   Period,
   PortfolioHistory,
   PortfolioSummary,
+  RecordsResponse,
   SecurityDetail,
   SecurityHistory,
   SortOrder,
@@ -107,4 +108,10 @@ export function fetchTfsaSummary(
     url += `&accounts=${accounts.join(",")}`;
   }
   return get<TfsaSummary>(url);
+}
+
+export type RecordSort = "pct" | "amount";
+
+export function fetchRecords(sort: RecordSort = "pct"): Promise<RecordsResponse> {
+  return get<RecordsResponse>(`/api/records?sort=${sort}`);
 }

@@ -16,6 +16,8 @@ from api.models import (
     HistoryPoint,
     PortfolioSummary,
     PeriodReturns,
+    Record,
+    RecordsResponse,
     SecurityDetail,
     SecurityHistory,
     SecurityHistoryPoint,
@@ -26,6 +28,7 @@ from api.services import returns as returns_service
 from api.services import valuation as valuation_service
 from api.services import security_info
 from api.services import tfsa as tfsa_service
+from api.services import records as records_service
 
 router = APIRouter()
 
@@ -349,6 +352,26 @@ def get_tfsa_summary(
         raise HTTPException(status_code=400, detail=str(e))
     data = tfsa_service.tfsa_summary(conn, birth_year=birth_year, account_ids=account_ids)
     return TfsaSummary(**data)
+
+
+@router.get("/records", response_model=RecordsResponse)
+def get_records(
+    sort: str = Query("pct"),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """All-time best and worst performers across all accounts.
+
+    Mixed realized (closed) and unrealized (open) positions. Not affected by
+    account/symbol filters elsewhere on the page.
+    """
+    if sort not in ("pct", "amount"):
+        raise HTTPException(status_code=400, detail="sort must be 'pct' or 'amount'")
+    data = records_service.top_records(conn, sort_by=sort, top_n=10)
+    return RecordsResponse(
+        best=[Record(**r) for r in data["best"]],
+        worst=[Record(**r) for r in data["worst"]],
+        sort_by=data["sort_by"],
+    )
 
 
 @router.get("/status")
