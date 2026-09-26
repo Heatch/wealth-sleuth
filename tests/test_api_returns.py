@@ -337,6 +337,36 @@ class ApiReturnTests(unittest.TestCase):
                 self.assertGreater(max_pv, 0.0)
                 self.assertLess(abs(max_spy - max_pv) / max_pv, 10.0)
 
+    def test_spinoff_holding_visible(self):
+        """Spinoff receipts (e.g. SOBO) must appear in holdings, not just records.
+
+        The holdings table is materialized; if it goes stale relative to the
+        transactions (e.g. refreshed before spinoff handling existed), the
+        position vanishes from holdings while records still show it.
+        """
+        res = self.client.get("/api/holdings?currency=CAD")
+        self.assertEqual(res.status_code, 200)
+        symbols = {h["symbol"] for h in res.json()["holdings"]}
+        self.assertIn("SOBO", symbols)
+        sobo = [h for h in res.json()["holdings"] if h["symbol"] == "SOBO"][0]
+        self.assertGreater(sobo["quantity"], 0)
+        self.assertIsNotNone(sobo["current_value"])
+
+    def test_dividend_yields_sane(self):
+        """Stored dividend yields must be decimal fractions, not percents.
+
+        Yahoo sometimes reports yield as the percentage value itself
+        (e.g. 0.99 for 0.99%); anything at/above 35% is a data error
+        (e.g. Loblaws at 100%, Dollarama at 26%).
+        """
+        res = self.client.get("/api/holdings?currency=CAD")
+        self.assertEqual(res.status_code, 200)
+        for h in res.json()["holdings"]:
+            y = h.get("dividend_yield")
+            if y is not None:
+                with self.subTest(symbol=h["symbol"]):
+                    self.assertLess(y, 0.35)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -58,7 +58,7 @@ class PortfolioCache:
     def invalidate_on_price_update(self):
         """Clear caches that depend on price data."""
         self.invalidate("valuation_*")
-        self.invalidate("price_map")
+        self.invalidate("price_map*")
         self.invalidate("returns_*")
 
 

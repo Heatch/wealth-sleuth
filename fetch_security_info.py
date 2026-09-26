@@ -85,10 +85,20 @@ INTERNATIONAL_ETF_KEYWORDS = [
 def resolve_ticker(symbol: str, currency: str, is_cdr: int) -> list[str]:
     """Return candidate Yahoo Finance tickers in preference order."""
     if currency == "USD":
-        return [symbol]
+        cands = [symbol]
+        if "." in symbol:
+            # US class shares use a dash on Yahoo (BRK.B -> BRK-B).
+            cands.append(symbol.replace(".", "-"))
+        return cands
     if is_cdr:
         # CDRs list on NEO (.NE). The underlying company is the plain symbol.
         return [f"{symbol}.NE", symbol]
+    if "." in symbol:
+        # Canadian class shares are listed with a dash on Yahoo
+        # (HMM.A -> HMM-A.TO); try those before the dotted forms.
+        dash = symbol.replace(".", "-")
+        return [f"{dash}.TO", f"{dash}.V", f"{dash}.CN", dash,
+                f"{symbol}.TO", f"{symbol}.V", f"{symbol}.CN", symbol]
     # CAD stocks/ETFs: TSX (.TO), Venture (.V), CSE (.CN), then plain
     return [f"{symbol}.TO", f"{symbol}.V", f"{symbol}.CN", symbol]
 

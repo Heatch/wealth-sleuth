@@ -2,7 +2,25 @@
 
 import unittest
 
-from fetch_security_info import infer_etf_country, infer_etf_sector_industry
+from fetch_security_info import infer_etf_country, infer_etf_sector_industry, resolve_ticker
+
+
+class TickerResolutionTests(unittest.TestCase):
+    def test_plain_cad_symbol(self):
+        """Undotted CAD symbols keep the classic .TO/.V/.CN order."""
+        self.assertEqual(
+            resolve_ticker("RY", "CAD", 0),
+            ["RY.TO", "RY.V", "RY.CN", "RY"],
+        )
+
+    def test_dotted_cad_class_share_prefers_dash(self):
+        """Yahoo lists class shares with a dash (HMM.A -> HMM-A.TO)."""
+        cands = resolve_ticker("HMM.A", "CAD", 0)
+        self.assertEqual(cands[0], "HMM-A.TO")
+        self.assertIn("HMM.A.TO", cands)
+
+    def test_dotted_usd_class_share(self):
+        self.assertEqual(resolve_ticker("BRK.B", "USD", 0), ["BRK.B", "BRK-B"])
 
 
 class ETFClassificationTests(unittest.TestCase):

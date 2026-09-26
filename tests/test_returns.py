@@ -104,6 +104,14 @@ class ReturnCalculationTests(unittest.TestCase):
 class ValuationEngineTests(unittest.TestCase):
     """In-memory checks for cash-flow dating and slice performance."""
 
+    def setUp(self):
+        from api.cache import cache
+        cache.invalidate()
+
+    def tearDown(self):
+        from api.cache import cache
+        cache.invalidate()
+
     def _conn(self):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
@@ -186,6 +194,26 @@ class ValuationEngineTests(unittest.TestCase):
         naive = (by_date["2024-01-05"] - by_date["2024-01-02"]) / by_date["2024-01-02"]
         self.assertGreater(naive, 1.0)
         self.assertLess(twr, 0.5)
+
+    def test_market_data_cache_shared_and_invalidated(self):
+        """The shared price-map cache serves one copy until prices update.
+
+        Repeated loads share the same object; after an invalidation (as
+        triggered by price updates) the next load rebuilds from the database.
+        """
+        from api.cache import cache
+        from api.services.valuation import load_market_data_cached
+
+        conn = self._conn()
+        conn.execute("INSERT INTO price_history VALUES (1, '2024-01-01', 10.0, 'CAD')")
+        m1 = load_market_data_cached(conn)
+        self.assertIs(load_market_data_cached(conn), m1)
+        conn.execute("INSERT INTO price_history VALUES (1, '2024-01-02', 11.0, 'CAD')")
+        cache.invalidate_on_price_update()
+        m2 = load_market_data_cached(conn)
+        self.assertIsNot(m2, m1)
+        self.assertEqual(m2[0][(1, "2024-01-02")], 11.0)
+        conn.close()
 
 
 class RealDataIntegrationTests(unittest.TestCase):

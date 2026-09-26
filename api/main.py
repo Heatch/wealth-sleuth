@@ -74,6 +74,11 @@ async def lifespan(app: FastAPI):
             conn = get_connection()
         else:
             print("No file changes. Skipping consolidation.")
+            # The holdings table is materialized: refresh it on every startup
+            # (~0.1s) so holdings logic fixes apply even when no transaction
+            # files changed (e.g. spinoff positions previously never built).
+            from refresh_holdings import refresh_holdings
+            refresh_holdings(DB_PATH)
         gaps = detect_price_gaps(conn)
     finally:
         conn.close()

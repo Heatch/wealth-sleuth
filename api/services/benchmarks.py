@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 from api.services import returns as returns_service
 from api.services.fx import convert
-from api.services.valuation import daily_portfolio_values_cached, load_fx_index, fx_rate_on_index
+from api.services.valuation import daily_portfolio_values_cached, load_market_data_cached, fx_rate_on_index
 from database import get_connection
 
 
@@ -176,7 +176,7 @@ def simulate_benchmark(
             return {"series": [], "returns": {}, "period_start_value": None, "period_end_value": None}
         bench_ccy = row["currency"]
         price_map = _load_benchmark_price_map(conn, row["id"])
-        fx_dates, fx_rates = load_fx_index(conn)
+        _, _, fx_dates, fx_rates = load_market_data_cached(conn)
     finally:
         conn.close()
 

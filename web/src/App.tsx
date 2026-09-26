@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
 import {
   fetchAccounts,
@@ -147,10 +147,12 @@ export default function App() {
   const summaryQ = useQuery({
     queryKey: ["summary", currency, selectedAccounts, sliceSymbols, selectedYear],
     queryFn: () => fetchSummary(currency, selectedAccounts ?? undefined, sliceSymbols, selectedYear ?? undefined),
+    placeholderData: keepPreviousData,
   });
   const historyQ = useQuery({
     queryKey: ["history", period, currency, selectedAccounts, sliceSymbols, selectedYear],
     queryFn: () => fetchHistory(period, currency, selectedAccounts ?? undefined, sliceSymbols, selectedYear ?? undefined),
+    placeholderData: keepPreviousData,
   });
   const statusQ = useQuery({
     queryKey: ["status"],
@@ -183,6 +185,7 @@ export default function App() {
         selectedYear ?? undefined,
       ),
     enabled: benchmarksEnabled && selectedBenchmarks.length > 0,
+    placeholderData: keepPreviousData,
   });
 
   const handleSort = (s: HoldingSort) => {

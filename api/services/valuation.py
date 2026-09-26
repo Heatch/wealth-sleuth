@@ -229,6 +229,29 @@ def fx_rate_on_index(fx_dates, fx_rates, d):
     return fx_rates[i]
 
 
+def load_market_data_cached(conn):
+    """Filter-independent market data, shared across all filter combinations.
+
+    The price map, price index, and FX series depend only on price/fx
+    history — not on account or security filters — so every pie-slice and
+    account-filter combo reuses one copy instead of rescanning
+    price_history (~0.5s) each time. All writers invalidate via
+    invalidate_on_price_update(), so a stale map can never be reused.
+    """
+    from api.cache import cache
+
+    key = "price_map"
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    price_map = load_price_map(conn)
+    price_index = build_price_index(price_map)
+    fx_dates, fx_rates = load_fx_index(conn)
+    result = (price_map, price_index, fx_dates, fx_rates)
+    cache.set(key, result)
+    return result
+
+
 def daily_portfolio_values(conn, currency="CAD", account_ids=None, security_ids=None):
     """Daily (date, value) series plus per-date external cash flows.
 
@@ -240,10 +263,9 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None, security_ids=
     currency = (currency or "CAD").upper()
     if security_ids is not None and len(security_ids) == 0:
         return [], {}, 0.0, 0.0, 0.0, {}, {}
-    price_map = load_price_map(conn)
+    price_map, price_index, fx_dates, fx_rates = load_market_data_cached(conn)
     secs = load_securities(conn)
     txns = load_transactions(conn, account_ids, security_ids)
-    fx_dates, fx_rates = load_fx_index(conn)
     by_date = defaultdict(list)
     undated = []
     for t in txns:
@@ -315,7 +337,6 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None, security_ids=
     for (sid, d) in price_map.keys():
         all_dates.add(d)
     all_dates = sorted(d for d in all_dates if first <= d <= last)
-    price_index = build_price_index(price_map)
     series = []
     flows = {}
     deposits = {}

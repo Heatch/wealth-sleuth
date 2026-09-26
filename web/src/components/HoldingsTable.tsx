@@ -47,11 +47,10 @@ type Col = { key: HoldingSort | "shares"; label: string; numeric: boolean; sorta
 const COLS: Col[] = [
   { key: "name", label: "Name", numeric: false, sortable: true },
   { key: "symbol", label: "Symbol", numeric: false, sortable: true },
-  { key: "sector", label: "Sector", numeric: false, sortable: true },
-  { key: "country", label: "Country", numeric: false, sortable: true },
   { key: "shares", label: "Shares", numeric: true, sortable: true },
   { key: "last_price", label: "Last price", numeric: true, sortable: true },
   { key: "value", label: "Value", numeric: true, sortable: true },
+  { key: "gain", label: "Gain", numeric: true, sortable: true },
   { key: "gain_pct", label: "Gain %", numeric: true, sortable: true },
   { key: "market_cap", label: "Market cap", numeric: true, sortable: true },
   { key: "trailing_pe", label: "P/E", numeric: true, sortable: true },
@@ -144,6 +143,9 @@ export default function HoldingsTable({
                     )}
                   </td>
                   <td className="py-2 pr-3 text-right" style={{ color: g >= 0 ? "var(--moss)" : "var(--brick)" }}>
+                    {fmtMoney(h.gain)}
+                  </td>
+                  <td className="py-2 pr-3 text-right" style={{ color: g >= 0 ? "var(--moss)" : "var(--brick)" }}>
                     {fmtPct(h.gain_pct)}
                   </td>
                   <td className="py-2 pr-3 text-right">{fmtCompactMoney(h.market_cap)}</td>
@@ -181,6 +183,9 @@ export default function HoldingsTable({
               <td />
               <td />
               <td className="py-2 pr-3 text-right font-semibold">{fmtMoney(totals.current_value)}</td>
+              <td className="py-2 pr-3 text-right font-semibold" style={{ color: totals.gain >= 0 ? "var(--moss)" : "var(--brick)" }}>
+                {fmtMoney(totals.gain)}
+              </td>
               <td className="py-2 pr-3 text-right font-semibold" style={{ color: totals.gain >= 0 ? "var(--moss)" : "var(--brick)" }}>
                 {fmtPct(totals.gain_pct)}
               </td>
