@@ -79,7 +79,7 @@ def get_summary(
         raise HTTPException(status_code=400, detail=str(e))
 
     security_ids = _resolve_security_ids(conn, symbol_list)
-    series, _flows, cash_total, _undated, _undated_dep, _deposits = valuation_service.daily_portfolio_values_cached(
+    series, _flows, cash_total, _undated, _undated_dep, _deposits, _daily_returns = valuation_service.daily_portfolio_values_cached(
         cur, account_ids, security_ids
     )
     if not series:
@@ -91,12 +91,7 @@ def get_summary(
     fx_rate, as_of = fx_service.get_latest_fx_rate(conn)
     returns_result = returns_service.portfolio_returns_cached(cur, account_ids, security_ids)
     raw = returns_result["periods"]
-    if security_ids:
-        # Segment-level returns are not meaningful because the filtered
-        # sub-portfolio can drop to zero when all slice holdings are sold.
-        mapped = {_period_key(k): PeriodReturns(twr=None, xirr=None) for k in raw}
-    else:
-        mapped = {_period_key(k): _to_period_returns(v) for k, v in raw.items()}
+    mapped = {_period_key(k): _to_period_returns(v) for k, v in raw.items()}
     return PortfolioSummary(
         total_value=end_value,
         total_change_today=change,
@@ -130,28 +125,16 @@ def get_history(
     points_data = returns_result["history"].get(per, [])
     if not points_data:
         raise HTTPException(status_code=404, detail="No portfolio data")
-    if security_ids:
-        points = [
-            HistoryPoint(
-                date=p["date"],
-                value=p["value"],
-                net_deposits=p["net_deposits"],
-                return_xirr=None,
-                return_twr=None,
-            )
-            for p in points_data
-        ]
-    else:
-        points = [
-            HistoryPoint(
-                date=p["date"],
-                value=p["value"],
-                net_deposits=p["net_deposits"],
-                return_xirr=p["return_xirr"],
-                return_twr=p["return_twr"],
-            )
-            for p in points_data
-        ]
+    points = [
+        HistoryPoint(
+            date=p["date"],
+            value=p["value"],
+            net_deposits=p["net_deposits"],
+            return_xirr=p["return_xirr"],
+            return_twr=p["return_twr"],
+        )
+        for p in points_data
+    ]
     return PortfolioHistory(
         series=points,
         period_start_value=points[0].value if points else None,

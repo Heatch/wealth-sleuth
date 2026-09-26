@@ -75,6 +75,118 @@ class ReturnCalculationTests(unittest.TestCase):
         result = returns_service.all_period_returns(sub, {})
         self.assertEqual(set(result.keys()), {"1m", "6m", "ytd", "1y", "3y", "all"})
 
+    def test_linked_twr_ignores_later_contributions(self):
+        """A later purchase must not be counted as investment performance."""
+        dates = ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"]
+        # Day 3 is a buy at an unchanged price (0% that day). Price then rises 10%.
+        daily = {
+            "2024-01-02": 0.0,
+            "2024-01-03": 0.10,
+            "2024-01-04": 0.0,
+            "2024-01-05": 0.10,
+        }
+        twr = returns_service.linked_twr(dates, daily)
+        self.assertAlmostEqual(twr, 1.10 * 1.10 - 1.0, places=6)
+        # (end 242 - start 100) / 100 would be +142% if the second buy counted.
+        self.assertLess(twr, 0.25)
+
+    def test_xirr_does_not_double_count_opening_flow(self):
+        """A deposit already inside the opening value is not applied again."""
+        start = date(2024, 1, 1)
+        end = start + timedelta(days=31)
+        sub = [(start.isoformat(), 1100.0), (end.isoformat(), 1100.0)]
+        flows = {start.isoformat(): 100.0}
+        xirr = returns_service.xirr_return(sub, flows)
+        self.assertIsNotNone(xirr)
+        self.assertAlmostEqual(xirr, 0.0, places=4)
+
+
+class ValuationEngineTests(unittest.TestCase):
+    """In-memory checks for cash-flow dating and slice performance."""
+
+    def _conn(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE securities (
+                id INTEGER PRIMARY KEY, symbol TEXT, currency TEXT, is_cash INTEGER
+            );
+            CREATE TABLE price_history (
+                security_id INTEGER, date TEXT, close_price REAL, currency TEXT
+            );
+            CREATE TABLE fx_history (date TEXT PRIMARY KEY, rate REAL);
+            CREATE TABLE transactions (
+                id INTEGER PRIMARY KEY,
+                date TEXT,
+                settlement_date TEXT,
+                type TEXT,
+                quantity REAL,
+                net_amount REAL,
+                currency TEXT,
+                security_id INTEGER,
+                account_id INTEGER
+            );
+            """
+        )
+        return conn
+
+    def test_blank_trade_date_uses_settlement_date(self):
+        """Disnat contributions have no trade date; they must not be one flat opening deposit."""
+        from api.services.valuation import daily_portfolio_values
+
+        conn = self._conn()
+        conn.execute(
+            "INSERT INTO transactions VALUES (1, '', '2024-08-13', 'deposit', 50, 50, 'CAD', NULL, 1)"
+        )
+        conn.execute(
+            "INSERT INTO transactions VALUES (2, '', '2024-12-03', 'deposit', 100, 100, 'CAD', NULL, 1)"
+        )
+        series, _flows, _cash, _base, undated_dep, deposits, _daily = daily_portfolio_values(conn, "CAD")
+        conn.close()
+        self.assertAlmostEqual(undated_dep, 0.0, places=4)
+        self.assertAlmostEqual(deposits.get("2024-08-13", 0.0), 50.0, places=4)
+        self.assertAlmostEqual(deposits.get("2024-12-03", 0.0), 100.0, places=4)
+        self.assertAlmostEqual(series[0][1], 50.0, places=4)
+        self.assertAlmostEqual(series[-1][1], 150.0, places=4)
+
+    def test_slice_twr_excludes_later_buys(self):
+        """A second purchase increases value but not the time-weighted return that day."""
+        from api.services.valuation import daily_portfolio_values
+
+        conn = self._conn()
+        conn.execute("INSERT INTO securities VALUES (1, 'ABC', 'CAD', 0)")
+        prices = [
+            ("2024-01-01", 10.0),
+            ("2024-01-02", 10.0),
+            ("2024-01-03", 11.0),
+            ("2024-01-04", 11.0),
+            ("2024-01-05", 12.1),
+        ]
+        for d, px in prices:
+            conn.execute(
+                "INSERT INTO price_history VALUES (1, ?, ?, 'CAD')", (d, px)
+            )
+        conn.execute(
+            "INSERT INTO transactions VALUES (1, '2024-01-02', '2024-01-02', 'buy', 10, -100, 'CAD', 1, 1)"
+        )
+        conn.execute(
+            "INSERT INTO transactions VALUES (2, '2024-01-04', '2024-01-04', 'buy', 10, -110, 'CAD', 1, 1)"
+        )
+        series, flows, *_rest, daily = daily_portfolio_values(conn, "CAD", None, [1])
+        conn.close()
+        by_date = dict(series)
+        self.assertAlmostEqual(by_date["2024-01-02"], 100.0, places=4)
+        self.assertAlmostEqual(by_date["2024-01-04"], 220.0, places=4)
+        self.assertAlmostEqual(by_date["2024-01-05"], 242.0, places=4)
+        self.assertAlmostEqual(daily["2024-01-04"], 0.0, places=4)
+        self.assertAlmostEqual(daily["2024-01-05"], 0.10, places=4)
+        twr = returns_service.linked_twr([d for d, _ in series if d >= "2024-01-02"], daily)
+        self.assertAlmostEqual(twr, 0.21, places=4)
+        naive = (by_date["2024-01-05"] - by_date["2024-01-02"]) / by_date["2024-01-02"]
+        self.assertGreater(naive, 1.0)
+        self.assertLess(twr, 0.5)
+
 
 class RealDataIntegrationTests(unittest.TestCase):
     """Run against the real portfolio database to validate filters and caching."""

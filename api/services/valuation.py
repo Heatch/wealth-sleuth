@@ -11,14 +11,53 @@ from collections import defaultdict
 from api.services.fx import convert, get_fx_rate_on
 
 
+_ISO_DATE = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
+# Trade date when it is a real date; otherwise settlement date. Disnat cash
+# movements often have a blank trade date and a real settlement date.
+_EFFECTIVE_DATE = (
+    "CASE "
+    f"WHEN date GLOB '{_ISO_DATE}' THEN date "
+    f"WHEN settlement_date GLOB '{_ISO_DATE}' THEN settlement_date "
+    "ELSE NULL END"
+)
+
+
+def _is_iso_date(value) -> bool:
+    return bool(value) and len(value) == 10 and value[4] == "-" and value[7] == "-"
+
+
+def _effective_txn_date(t):
+    """Trade date, or settlement date when the trade date was not recorded."""
+    trade = t["date"]
+    if _is_iso_date(trade):
+        return trade
+    settle = t["settlement_date"] if "settlement_date" in t.keys() else None
+    if _is_iso_date(settle):
+        return settle
+    return None
+
+
+def _txn_dict(t, date):
+    """Copy a transaction row onto an explicit date. sqlite3.Row is immutable."""
+    return {
+        "date": date,
+        "type": t["type"],
+        "quantity": t["quantity"],
+        "net_amount": t["net_amount"],
+        "currency": t["currency"],
+        "security_id": t["security_id"],
+        "account_id": t["account_id"],
+    }
+
+
 def get_date_range(conn, account_ids=None):
     """First/last dates covering transactions and prices.
 
     When account_ids is given, only those accounts' transactions are
     considered for the date range. Price history range is always global.
+    Blank trade dates fall back to settlement date so cash contributions
+    are not dropped from the window.
     """
-    # Only real YYYY-MM-DD dates (never CSV footers like "As of ...")
-    valid = "date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"
     params = list(account_ids) if account_ids else []
     if account_ids:
         placeholders = ",".join("?" * len(account_ids))
@@ -26,12 +65,14 @@ def get_date_range(conn, account_ids=None):
     else:
         acct_filter = ""
     lo = conn.execute(
-        "SELECT MIN(date) AS dmin FROM transactions WHERE " + valid + acct_filter,
+        f"SELECT MIN({_EFFECTIVE_DATE}) AS dmin FROM transactions "
+        f"WHERE {_EFFECTIVE_DATE} IS NOT NULL" + acct_filter,
         params,
     ).fetchone()
     first_txn = lo["dmin"] if lo else None
     hi = conn.execute(
-        "SELECT MAX(date) AS dmax FROM transactions WHERE " + valid + acct_filter,
+        f"SELECT MAX({_EFFECTIVE_DATE}) AS dmax FROM transactions "
+        f"WHERE {_EFFECTIVE_DATE} IS NOT NULL" + acct_filter,
         params,
     ).fetchone()
     last_txn = hi["dmax"] if hi else None
@@ -63,7 +104,7 @@ def load_securities(conn):
 
 def load_transactions(conn, account_ids=None, security_ids=None):
     """All transactions ordered by date (undated first), optionally filtered."""
-    q = "SELECT date, type, quantity, net_amount, currency, security_id, account_id "
+    q = "SELECT date, settlement_date, type, quantity, net_amount, currency, security_id, account_id "
     q += "FROM transactions"
     conditions = []
     params: list = []
@@ -84,9 +125,10 @@ def load_transactions(conn, account_ids=None, security_ids=None):
 def apply_txn(t, positions, cash):
     """Apply one txn to positions/cash. Returns external flow (deposit/withdrawal net).
 
-    Only true deposits/withdrawals count as external flows. Inter-account
-    cash transfers (e.g., CONT. TO TFSA) and other cash journals are
-    internal movements, not money entering/leaving the portfolio.
+    Deposits, withdrawals, and cash transfers (no security) are external
+    to the account they post in. A TFSA contribution and the matching
+    non-registered transfer cancel when both accounts are in the filter.
+    Security journals are position movements, not cash flows.
     """
     ttype = t["type"]
     qty = t["quantity"] or 0.0
@@ -102,6 +144,8 @@ def apply_txn(t, positions, cash):
     elif ttype == "transfer" and sid is not None:
         positions[(acct, sid)] = positions.get((acct, sid), 0.0) + qty
     if ttype in ("deposit", "withdrawal"):
+        return net
+    if ttype == "transfer" and sid is None and net:
         return net
     return 0.0
 
@@ -188,7 +232,7 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None, security_ids=
     """
     currency = (currency or "CAD").upper()
     if security_ids is not None and len(security_ids) == 0:
-        return [], {}, 0.0, 0.0, 0.0, {}
+        return [], {}, 0.0, 0.0, 0.0, {}, {}
     price_map = load_price_map(conn)
     secs = load_securities(conn)
     txns = load_transactions(conn, account_ids, security_ids)
@@ -196,13 +240,15 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None, security_ids=
     by_date = defaultdict(list)
     undated = []
     for t in txns:
-        if t["date"]:
-            by_date[t["date"]].append(t)
+        when = _effective_txn_date(t)
+        txn = _txn_dict(t, when)
+        if when:
+            by_date[when].append(txn)
         else:
-            undated.append(t)
+            undated.append(txn)
     first, last = get_date_range(conn, account_ids)
     if not first or not last:
-        return [], {}, 0.0, {}
+        return [], {}, 0.0, 0.0, 0.0, {}, {}
     positions = {}
     cash = {}
     # Undated external flows (e.g., Disnat contributions with Trade Date
@@ -213,28 +259,51 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None, security_ids=
     undated_dep_by_ccy: dict[str, float] = {}
     for t in undated:
         raw_flow = apply_txn(t, positions, cash)
-        if raw_flow == 0.0:
-            # Check for security transfers (DLR journals) — value at most
-            # recent price for the deposits display.
-            if (
-                t["type"] == "transfer"
-                and t["security_id"] is not None
-                and t["quantity"]
-            ):
-                sid = t["security_id"]
-                dates = [d for (s, d) in price_map.keys() if s == sid]
-                if dates:
-                    latest = max(dates)
-                    price = price_map.get((sid, latest))
-                    if price is not None:
-                        sec = secs.get(sid)
-                        if sec:
-                            val = t["quantity"] * price
-                            ccy = sec["currency"]
-                            undated_dep_by_ccy[ccy] = undated_dep_by_ccy.get(ccy, 0.0) + val
-            continue
-        undated_by_ccy[t["currency"]] = undated_by_ccy.get(t["currency"], 0.0) + raw_flow
-        undated_dep_by_ccy[t["currency"]] = undated_dep_by_ccy.get(t["currency"], 0.0) + raw_flow
+        ttype = t["type"]
+        if security_ids is None:
+            if raw_flow == 0.0:
+                # Check for security transfers (DLR journals) — value at most
+                # recent price for the deposits display.
+                if (
+                    ttype == "transfer"
+                    and t["security_id"] is not None
+                    and t["quantity"]
+                ):
+                    sid = t["security_id"]
+                    dates = [d for (s, d) in price_map.keys() if s == sid]
+                    if dates:
+                        latest = max(dates)
+                        price = price_map.get((sid, latest))
+                        if price is not None:
+                            sec = secs.get(sid)
+                            if sec:
+                                val = t["quantity"] * price
+                                ccy = sec["currency"]
+                                undated_dep_by_ccy[ccy] = undated_dep_by_ccy.get(ccy, 0.0) + val
+                continue
+            undated_by_ccy[t["currency"]] = undated_by_ccy.get(t["currency"], 0.0) + raw_flow
+            undated_dep_by_ccy[t["currency"]] = undated_dep_by_ccy.get(t["currency"], 0.0) + raw_flow
+        else:
+            # Segment mode: undated buy/sell transactions form part of the
+            # slice's cost basis for the net-deposits line.
+            if ttype == "transfer":
+                if t["security_id"] is not None and t["quantity"]:
+                    sid = t["security_id"]
+                    dates = [d for (s, d) in price_map.keys() if s == sid]
+                    if dates:
+                        latest = max(dates)
+                        price = price_map.get((sid, latest))
+                        if price is not None:
+                            sec = secs.get(sid)
+                            if sec:
+                                val = t["quantity"] * price
+                                ccy = sec["currency"]
+                                undated_dep_by_ccy[ccy] = undated_dep_by_ccy.get(ccy, 0.0) + val
+            elif ttype in ("buy", "sell"):
+                net = t["net_amount"] or 0.0
+                if net:
+                    # Money put into slice securities = -net_amount.
+                    undated_dep_by_ccy[t["currency"]] = undated_dep_by_ccy.get(t["currency"], 0.0) - net
     all_dates = set(by_date.keys())
     for (sid, d) in price_map.keys():
         all_dates.add(d)
@@ -243,35 +312,97 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None, security_ids=
     series = []
     flows = {}
     deposits = {}
+    # Holding-period return of shares (and cash) already held, before today's
+    # trades. New buys earn nothing today, so contributions are not performance.
+    daily_returns = {}
+    prev_total = None
+    prev_fx = None
+    prev_date = None
     for d in all_dates:
         fx_rate = fx_rate_on_index(fx_dates, fx_rates, d)
+        day_txns = by_date.get(d, [])
+        if prev_total is not None and prev_total > 1e-6:
+            # Only securities that already had a price contribute. A holding
+            # whose history starts today would otherwise book its whole value
+            # as a one-day gain.
+            gain = 0.0
+            for (acct, sid), qty in positions.items():
+                if not qty:
+                    continue
+                sec = secs.get(sid)
+                if not sec or sec["is_cash"]:
+                    continue
+                price_prev = price_on(price_index, price_map, sid, prev_date)
+                if price_prev is None:
+                    continue
+                price_today = price_on(price_index, price_map, sid, d)
+                if price_today is None:
+                    price_today = price_prev
+                prev_val = convert(qty * price_prev, sec["currency"], currency, prev_fx)
+                today_val = convert(qty * price_today, sec["currency"], currency, fx_rate)
+                gain += today_val - prev_val
+            if security_ids is None:
+                gain += value_cash(cash, currency, fx_rate) - value_cash(cash, currency, prev_fx)
+            for t in day_txns:
+                if t["type"] in ("dividend", "interest", "tax"):
+                    gain += convert(t["net_amount"] or 0.0, t["currency"], currency, fx_rate)
+            daily_returns[d] = gain / prev_total
+        else:
+            daily_returns[d] = 0.0
         day_flow = 0.0
         day_dep = 0.0
-        for t in by_date.get(d, []):
+        for t in day_txns:
             raw_flow = apply_txn(t, positions, cash)
-            if raw_flow != 0.0:
-                day_flow += convert(raw_flow, t["currency"], currency, fx_rate)
-                day_dep += convert(raw_flow, t["currency"], currency, fx_rate)
-            elif (
-                t["type"] == "transfer"
-                and t["security_id"] is not None
-                and t["quantity"]
-            ):
-                # Security transfer (e.g., Nobert's Gambit journal): value the
-                # shares at market price so the destination account shows the
-                # economic deposit. Kept OUT of `flows` (TWR/MWR untouched).
-                price = price_on(price_index, price_map, t["security_id"], d)
-                if price is not None:
-                    sec = secs.get(t["security_id"])
-                    if sec:
-                        val = t["quantity"] * price
-                        day_dep += convert(val, sec["currency"], currency, fx_rate)
+            ttype = t["type"]
+            if security_ids is None:
+                if raw_flow != 0.0:
+                    day_flow += convert(raw_flow, t["currency"], currency, fx_rate)
+                    day_dep += convert(raw_flow, t["currency"], currency, fx_rate)
+                elif (
+                    ttype == "transfer"
+                    and t["security_id"] is not None
+                    and t["quantity"]
+                ):
+                    # Security transfer (e.g., Nobert's Gambit journal): value the
+                    # shares at market price so the destination account shows the
+                    # economic deposit. Kept OUT of `flows` (TWR/MWR untouched).
+                    price = price_on(price_index, price_map, t["security_id"], d)
+                    if price is not None:
+                        sec = secs.get(t["security_id"])
+                        if sec:
+                            val = t["quantity"] * price
+                            day_dep += convert(val, sec["currency"], currency, fx_rate)
+            else:
+                # Segment mode: the slice's cash flows for returns are the
+                # signed net amounts of its transactions (buys are money put
+                # into the slice, sells/dividends are money taken out).
+                # Transfers are internal movements and are excluded from flows.
+                if ttype == "transfer":
+                    if t["security_id"] is not None and t["quantity"]:
+                        price = price_on(price_index, price_map, t["security_id"], d)
+                        if price is not None:
+                            sec = secs.get(t["security_id"])
+                            if sec:
+                                val = t["quantity"] * price
+                                day_dep += convert(val, sec["currency"], currency, fx_rate)
+                else:
+                    net = t["net_amount"] or 0.0
+                    if net:
+                        converted = convert(net, t["currency"], currency, fx_rate)
+                        # Flip sign: a negative net_amount (buy) is money
+                        # invested in the slice, so it is a positive flow.
+                        day_flow -= converted
+                        if ttype in ("buy", "sell"):
+                            day_dep -= converted
         flows[d] = day_flow
         deposits[d] = day_dep
         total = value_positions(positions, secs, price_map, price_index, d, currency, fx_rate)
         if security_ids is None:
             total += value_cash(cash, currency, fx_rate)
         series.append((d, total))
+        prev_total = total
+        prev_fx = fx_rate
+        prev_date = d
 
     # Final cash balance in display currency (for the cash totals line)
     last_fx = fx_rate_on_index(fx_dates, fx_rates, last) if all_dates else 1.0
@@ -287,7 +418,7 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None, security_ids=
         convert(amt, ccy, currency, first_fx)
         for ccy, amt in undated_dep_by_ccy.items()
     )
-    return series, flows, cash_total, undated_base, undated_dep_base, deposits
+    return series, flows, cash_total, undated_base, undated_dep_base, deposits, daily_returns
 
 
 def daily_portfolio_values_cached(currency="CAD", account_ids=None, security_ids=None):
@@ -303,8 +434,8 @@ def daily_portfolio_values_cached(currency="CAD", account_ids=None, security_ids
 
     acct_key = tuple(sorted(account_ids)) if account_ids else "all"
     sec_key = tuple(sorted(security_ids)) if security_ids else "all"
-    # v2 bump: segment views now exclude cash and hide returns.
-    key = f"valuation_v2_{currency}_{acct_key}_{sec_key}"
+    # v4 bump: settlement-dated cash flows + holding-period daily returns.
+    key = f"valuation_v5_{currency}_{acct_key}_{sec_key}"
     cached = cache.get(key)
     if cached is not None:
         return cached
