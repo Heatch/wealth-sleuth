@@ -9,7 +9,11 @@ import type {
   Period,
   PortfolioHistory,
   PortfolioSummary,
+  RecordsResponse,
+  SecurityDetail,
+  SecurityHistory,
   SortOrder,
+  TfsaSummary,
 } from "../lib/types";
 
 async function get<T>(path: string): Promise<T> {
@@ -117,4 +121,34 @@ export interface StatusResponse {
 
 export function fetchStatus(): Promise<StatusResponse> {
   return get<StatusResponse>(`/api/status`);
+}
+
+export function fetchSecurityDetail(symbol: string): Promise<SecurityDetail> {
+  return get<SecurityDetail>(`/api/securities/${encodeURIComponent(symbol)}`);
+}
+
+export function fetchSecurityHistory(
+  symbol: string,
+  period: Period = "1y",
+): Promise<SecurityHistory> {
+  return get<SecurityHistory>(
+    `/api/securities/${encodeURIComponent(symbol)}/history?period=${period}`,
+  );
+}
+
+export function fetchTfsaSummary(
+  birthYear: number,
+  accounts?: number[] | null,
+): Promise<TfsaSummary> {
+  let url = `/api/tfsa?birth_year=${birthYear}`;
+  if (accounts && accounts.length) {
+    url += `&accounts=${accounts.join(",")}`;
+  }
+  return get<TfsaSummary>(url);
+}
+
+export type RecordSort = "pct" | "amount";
+
+export function fetchRecords(sort: RecordSort = "pct"): Promise<RecordsResponse> {
+  return get<RecordsResponse>(`/api/records?sort=${sort}`);
 }

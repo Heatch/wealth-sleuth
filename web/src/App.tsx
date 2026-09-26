@@ -10,7 +10,7 @@ import {
   fetchSummary,
   fetchStatus,
 } from "./api/portfolio";
-import type { AllocationFilter, Currency, HoldingSort, Period, ReturnMethod, SortOrder } from "./lib/types";
+import type { AllocationFilter, Currency, Holding, HoldingSort, Period, ReturnMethod, SortOrder } from "./lib/types";
 import { matchesAllocationFilters } from "./lib/allocation";
 import AccountTypeFilter from "./components/AccountTypeFilter";
 import AllocationSection from "./components/AllocationSection";
@@ -19,7 +19,9 @@ import CollapsibleSection from "./components/CollapsibleSection";
 import HoldingsTable from "./components/HoldingsTable";
 import PerformanceChart, { type ZoomRange } from "./components/PerformanceChart";
 import PortfolioBalance from "./components/PortfolioBalance";
+import RecordsSection from "./components/RecordsSection";
 import StatusBanner from "./components/StatusBanner";
+import TFSABanner from "./components/TFSABanner";
 
 export default function App() {
   const [currency, setCurrency] = useState<Currency>("CAD");
@@ -34,6 +36,17 @@ export default function App() {
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
   const [holdingsOpen, setHoldingsOpen] = useState(true);
   const [allocationOpen, setAllocationOpen] = useState(true);
+  const [recordsOpen, setRecordsOpen] = useState(true);
+  const [openCards, setOpenCards] = useState<Record<string, Holding>>({});
+  const [birthYear, setBirthYear] = useState<number>(() => {
+    if (typeof window === "undefined") return 2005;
+    try {
+      const saved = window.localStorage.getItem("pt-tfsa-birth-year");
+      return saved ? parseInt(saved, 10) : 2005;
+    } catch {
+      return 2005;
+    }
+  });
   const [selectedBrokerages, setSelectedBrokerages] = useState<string[] | null>(() => {
     if (typeof window === "undefined") return null;
     try {
@@ -75,6 +88,10 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem("pt-types", JSON.stringify(selectedTypes));
   }, [selectedTypes]);
+
+  useEffect(() => {
+    window.localStorage.setItem("pt-tfsa-birth-year", String(birthYear));
+  }, [birthYear]);
 
   const accountsQ = useQuery({
     queryKey: ["accounts"],
@@ -177,10 +194,32 @@ export default function App() {
     }
   };
 
+  const sameHolding = (a: Holding, b: Holding) =>
+    a.symbol === b.symbol && a.brokerage === b.brokerage && a.account_type === b.account_type;
+
+  const handleToggleCard = (h: Holding) => {
+    setOpenCards((prev) => {
+      const next = { ...prev };
+      if (next[h.symbol] && sameHolding(next[h.symbol], h)) {
+        delete next[h.symbol];
+      } else {
+        next[h.symbol] = h;
+      }
+      return next;
+    });
+  };
+
+  const handleCloseCard = (symbol: string) => {
+    setOpenCards((prev) => {
+      const next = { ...prev };
+      delete next[symbol];
+      return next;
+    });
+  };
+
   const availableYears = historyQ.data?.available_years ?? [];
 
   const error = summaryQ.error || historyQ.error || holdingsQ.error || benchmarkHistoryQ.error;
-
   // Reset chart zoom and allocation filter whenever the underlying dataset changes
   const handlePeriod = (p: Period) => {
     setPeriod(p);
@@ -192,23 +231,27 @@ export default function App() {
     setZoom(null);
     setAllocationFilters([]);
     setSelectedYear(null);
+    setOpenCards({});
   };
   const handleBrokerages = (ids: string[] | null) => {
     setSelectedBrokerages(ids);
     setZoom(null);
     setAllocationFilters([]);
     setSelectedYear(null);
+    setOpenCards({});
   };
   const handleTypes = (ids: string[] | null) => {
     setSelectedTypes(ids);
     setZoom(null);
     setAllocationFilters([]);
     setSelectedYear(null);
+    setOpenCards({});
   };
   const handleAllocationFilters = (filters: AllocationFilter[]) => {
     setAllocationFilters(filters);
     setZoom(null);
     setSelectedYear(null);
+    setOpenCards({});
   };
   const handleYear = (y: number | null) => {
     setSelectedYear(y);
@@ -216,6 +259,13 @@ export default function App() {
   };
 
   const nothingSelected = selectedAccounts !== null && selectedAccounts.length === 0;
+
+  const showTfsaBanner = useMemo(() => {
+    const list = accountsQ.data?.accounts;
+    if (!list || !selectedAccounts || selectedAccounts.length === 0) return false;
+    const selected = list.filter((a) => selectedAccounts.includes(a.id));
+    return selected.every((a) => a.account_type === "tfsa");
+  }, [accountsQ.data, selectedAccounts]);
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-8">
@@ -287,6 +337,13 @@ export default function App() {
         </div>
       ) : null}
       <StatusBanner status={statusQ.data} />
+      {showTfsaBanner && !nothingSelected && (
+        <TFSABanner
+          birthYear={birthYear}
+          onBirthYear={setBirthYear}
+          accountIds={selectedAccounts}
+        />
+      )}
       {nothingSelected ? (
         <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>
           Select accounts above to view portfolio data.
@@ -330,6 +387,10 @@ export default function App() {
               sort={sort}
               order={order}
               onSort={handleSort}
+              currency={currency}
+              openCards={openCards}
+              onToggleCard={handleToggleCard}
+              onCloseCard={handleCloseCard}
             />
           </CollapsibleSection>
         </>
@@ -343,6 +404,9 @@ export default function App() {
           />
         </CollapsibleSection>
       )}
+      <CollapsibleSection title="Records" open={recordsOpen} onToggle={() => setRecordsOpen((o) => !o)}>
+        <RecordsSection />
+      </CollapsibleSection>
       <div className="mt-8 text-xs" style={{ color: "var(--ink-soft)" }}>
         Prices via yfinance. Returns computed from full transaction history.
       </div>

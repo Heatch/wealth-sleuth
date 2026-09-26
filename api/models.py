@@ -64,6 +64,9 @@ class Holding(BaseModel):
     book_cost: float
     current_price: Optional[float] = None
     current_value: Optional[float] = None
+    market_cap: Optional[float] = None
+    trailing_pe: Optional[float] = None
+    dividend_yield: Optional[float] = None
     gain: Optional[float] = None
     gain_pct: Optional[float] = None
     weight: Optional[float] = None
@@ -96,4 +99,96 @@ class Account(BaseModel):
 
 class AccountsResponse(BaseModel):
     accounts: list[Account]
+
+
+class TfsaSummary(BaseModel):
+    birth_year: int
+    year_turned_18: int
+    first_contribution_year: int
+    current_year: int
+    lifetime_contributions: float
+    lifetime_withdrawals: float
+    cumulative_room: float
+    withdrawal_room: float
+    total_room: float
+    remaining_room: float
+    pct_used: float
+
+
+class Record(BaseModel):
+    account_id: int
+    brokerage: str
+    account_type: str
+    security_id: int
+    symbol: str
+    name: Optional[str] = None
+    currency: str
+    sector: Optional[str] = None
+    country: Optional[str] = None
+    is_open: bool
+    buy_date: str
+    sell_date: Optional[str] = None
+    quantity: float
+    buy_price: float
+    sell_price: Optional[float] = None
+    cost_basis: float
+    proceeds_or_value: float
+    gain_amount: float
+    gain_pct: float
+    gain_amount_cad: float
+    gain_pct_cad: float
+    duration_days: int
+    duration_label: str
+
+
+class RecordsResponse(BaseModel):
+    best: list[Record]
+    worst: list[Record]
+    sort_by: str
+
+
+class SecurityDetail(BaseModel):
+    """Full company/security info shown in the expanded company card."""
+
+    symbol: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    currency: str
+    asset_class: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    country: Optional[str] = None
+    exchange: Optional[str] = None
+    last_price: Optional[float] = None
+    last_price_date: Optional[str] = None
+    market_cap: Optional[float] = None
+    trailing_pe: Optional[float] = None
+    forward_pe: Optional[float] = None
+    dividend_yield: Optional[float] = None
+    dividend_rate: Optional[float] = None
+    fifty_two_week_high: Optional[float] = None
+    fifty_two_week_low: Optional[float] = None
+    beta: Optional[float] = None
+    eps: Optional[float] = None
+    price_to_book: Optional[float] = None
+    price_to_sales: Optional[float] = None
+    profit_margin: Optional[float] = None
+    payout_ratio: Optional[float] = None
+    ex_dividend_date: Optional[str] = None
+    dividend_date: Optional[str] = None
+    average_volume: Optional[int] = None
+    volume: Optional[int] = None
+    source: str = "db"
+
+
+class SecurityHistoryPoint(BaseModel):
+    date: str
+    close: float
+
+
+class SecurityHistory(BaseModel):
+    symbol: str
+    currency: Optional[str] = None
+    period: str
+    series: list[SecurityHistoryPoint]
 
