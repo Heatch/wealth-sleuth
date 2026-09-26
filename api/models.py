@@ -54,6 +54,9 @@ class Holding(BaseModel):
     brokerage: str
     account_type: str
     asset_class: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    country: Optional[str] = None
     currency: str
     quantity: float
     avg_cost: float

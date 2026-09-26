@@ -23,12 +23,32 @@ function withAccounts(url: string, accounts?: number[] | null): string {
   return url;
 }
 
-export function fetchSummary(currency: Currency, accounts?: number[] | null): Promise<PortfolioSummary> {
-  return get<PortfolioSummary>(withAccounts(`/api/portfolio/summary?currency=${currency}`, accounts));
+function withSymbols(url: string, symbols?: string[] | null): string {
+  if (symbols && symbols.length) return `${url}&symbols=${encodeURIComponent(symbols.join(","))}`;
+  return url;
 }
 
-export function fetchHistory(period: Period, currency: Currency, accounts?: number[] | null): Promise<PortfolioHistory> {
-  return get<PortfolioHistory>(withAccounts(`/api/portfolio/history?period=${period}&currency=${currency}`, accounts));
+export function fetchSummary(
+  currency: Currency,
+  accounts?: number[] | null,
+  symbols?: string[] | null,
+): Promise<PortfolioSummary> {
+  let url = `/api/portfolio/summary?currency=${currency}`;
+  url = withAccounts(url, accounts);
+  url = withSymbols(url, symbols);
+  return get<PortfolioSummary>(url);
+}
+
+export function fetchHistory(
+  period: Period,
+  currency: Currency,
+  accounts?: number[] | null,
+  symbols?: string[] | null,
+): Promise<PortfolioHistory> {
+  let url = `/api/portfolio/history?period=${period}&currency=${currency}`;
+  url = withAccounts(url, accounts);
+  url = withSymbols(url, symbols);
+  return get<PortfolioHistory>(url);
 }
 
 export function fetchHoldings(
@@ -61,4 +81,3 @@ export interface StatusResponse {
 export function fetchStatus(): Promise<StatusResponse> {
   return get<StatusResponse>(`/api/status`);
 }
-

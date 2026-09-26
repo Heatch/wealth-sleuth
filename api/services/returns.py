@@ -187,8 +187,17 @@ def twr_return(sub: list, flows: dict) -> Optional[float]:
     return linked - 1.0
 
 
+def _trim_leading_zeros(sub: list) -> list:
+    """Drop leading zero-value days so returns start from the first real value."""
+    for i, (_, v) in enumerate(sub):
+        if abs(v) > 1e-9:
+            return sub[i:]
+    return []
+
+
 def period_returns(sub: list, flows: dict) -> dict:
     """Compute XIRR and TWR for a pre-sliced sub-series."""
+    sub = _trim_leading_zeros(sub)
     if len(sub) < 2:
         return {"xirr": None, "twr": None}
     return {
@@ -213,26 +222,38 @@ def all_period_returns(series: list, flows: dict) -> dict:
 
 
 def point_returns(sub: list, flows: dict) -> list[dict]:
-    """Cumulative XIRR and TWR from the first point of *sub* to each point.
+    """Cumulative XIRR and TWR from the first real point of *sub* to each point.
 
-    The first point has a TWR of 0% and no XIRR (too short a horizon).
+    The result list is the same length as *sub* so it can be zipped with the
+    original series. Leading zero-value days get null returns; the first
+    non-zero point has a TWR of 0%.
     """
     if not sub:
         return []
 
-    flow_list = [(d, flows.get(d, 0.0) or 0.0) for d, _ in sub]
-    results = []
-    for i in range(len(sub)):
+    first_idx = None
+    for i, (_, v) in enumerate(sub):
+        if abs(v) > 1e-9:
+            first_idx = i
+            break
+    if first_idx is None:
+        return [{"xirr": None, "twr": None} for _ in sub]
+
+    trimmed = sub[first_idx:]
+    flow_list = [(d, flows.get(d, 0.0) or 0.0) for d, _ in trimmed]
+    results: list[dict] = []
+    for i in range(len(trimmed)):
         if i == 0:
             results.append({"xirr": None, "twr": 0.0})
             continue
-        point_sub = sub[: i + 1]
+        point_sub = trimmed[: i + 1]
         point_flows = {d: v for d, v in flow_list[: i + 1] if v}
         results.append({
             "xirr": xirr_return(point_sub, point_flows),
             "twr": twr_return(point_sub, point_flows),
         })
-    return results
+
+    return [{"xirr": None, "twr": None} for _ in range(first_idx)] + results
 
 
 def portfolio_returns(series: list, flows: dict, deposits: dict, undated_dep: float) -> dict:
@@ -274,8 +295,10 @@ def portfolio_returns(series: list, flows: dict, deposits: dict, undated_dep: fl
     return out
 
 
-def portfolio_returns_cached(currency: str = "CAD", account_ids: Optional[list] = None) -> dict:
-    """Cache the full return package per (currency, account filter).
+def portfolio_returns_cached(
+    currency: str = "CAD", account_ids: Optional[list] = None, security_ids: Optional[list] = None
+) -> dict:
+    """Cache the full return package per (currency, account filter, security filter).
 
     The underlying daily valuations are also cached, so the full dashboard
     (summary + history) shares one computation.
@@ -284,13 +307,15 @@ def portfolio_returns_cached(currency: str = "CAD", account_ids: Optional[list] 
     from api.services.valuation import daily_portfolio_values_cached
 
     acct_key = tuple(sorted(account_ids)) if account_ids else "all"
-    key = f"returns_{currency}_{acct_key}"
+    sec_key = tuple(sorted(security_ids)) if security_ids else "all"
+    # v2 bump: segment views now exclude cash and hide returns.
+    key = f"returns_v2_{currency}_{acct_key}_{sec_key}"
     cached = cache.get(key)
     if cached is not None:
         return cached
 
     series, flows, cash_total, _undated_base, undated_dep, deposits = daily_portfolio_values_cached(
-        currency, account_ids
+        currency, account_ids, security_ids
     )
     result = portfolio_returns(series, flows, deposits, undated_dep)
     result["cash_total"] = cash_total

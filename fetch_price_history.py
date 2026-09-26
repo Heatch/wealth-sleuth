@@ -20,6 +20,10 @@ def resolve_ticker_for_history(symbol: str, currency: str, is_cdr: int) -> list[
     """
     cands = resolve_ticker(symbol, currency, is_cdr)
     if is_cdr and currency != "USD":
+        # Ensure .TO is available for history; info lookup uses the plain symbol.
+        to_ticker = f"{symbol}.TO"
+        if to_ticker not in cands:
+            cands = cands + [to_ticker]
         # Prefer .TO for history (NEO feed has NaN closes after Jul 2026)
         to_first = sorted(cands, key=lambda t: (0 if t.endswith(".TO") else 1, t))
         # Deduplicate while preserving order

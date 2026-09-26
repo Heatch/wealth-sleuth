@@ -192,6 +192,7 @@ SECURITIES_EXTRA_COLUMNS = {
     "dividend_rate": "REAL",
     "fifty_two_week_high": "REAL",
     "fifty_two_week_low": "REAL",
+    "country": "TEXT",
 }
 
 

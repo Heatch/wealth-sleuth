@@ -54,3 +54,11 @@ def parse_account_ids(accounts: Optional[str]) -> Optional[list[int]]:
         raise ValueError("accounts must be comma-separated integer IDs")
     return ids or None
 
+
+def parse_symbols(symbols: Optional[str]) -> Optional[list[str]]:
+    """Parse comma-separated security symbols. None/empty means all securities."""
+    if not symbols:
+        return None
+    ids = [x.strip().upper() for x in symbols.split(",") if x.strip()]
+    return ids or None
+

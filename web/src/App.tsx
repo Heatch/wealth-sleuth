@@ -2,9 +2,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
 import { fetchAccounts, fetchHoldings, fetchHistory, fetchSummary, fetchStatus } from "./api/portfolio";
-import type { Currency, HoldingSort, Period, ReturnMethod, SortOrder } from "./lib/types";
+import type { AllocationFilter, Currency, HoldingSort, Period, ReturnMethod, SortOrder } from "./lib/types";
 import AccountTypeFilter from "./components/AccountTypeFilter";
+import AllocationSection from "./components/AllocationSection";
 import BrokerageFilter from "./components/BrokerageFilter";
+import CollapsibleSection from "./components/CollapsibleSection";
 import HoldingsTable from "./components/HoldingsTable";
 import PerformanceChart, { type ZoomRange } from "./components/PerformanceChart";
 import PortfolioBalance from "./components/PortfolioBalance";
@@ -17,6 +19,9 @@ export default function App() {
   const [sort, setSort] = useState<HoldingSort>("value");
   const [order, setOrder] = useState<SortOrder>("desc");
   const [zoom, setZoom] = useState<ZoomRange | null>(null);
+  const [allocationFilter, setAllocationFilter] = useState<AllocationFilter | null>(null);
+  const [holdingsOpen, setHoldingsOpen] = useState(true);
+  const [allocationOpen, setAllocationOpen] = useState(true);
   const [selectedBrokerages, setSelectedBrokerages] = useState<string[] | null>(() => {
     if (typeof window === "undefined") return null;
     try {
@@ -82,17 +87,41 @@ export default function App() {
     return filtered.map((a) => a.id);
   }, [accountsQ.data, selectedBrokerages, selectedTypes]);
 
-  const summaryQ = useQuery({
-    queryKey: ["summary", currency, selectedAccounts],
-    queryFn: () => fetchSummary(currency, selectedAccounts ?? undefined),
-  });
-  const historyQ = useQuery({
-    queryKey: ["history", period, currency, selectedAccounts],
-    queryFn: () => fetchHistory(period, currency, selectedAccounts ?? undefined),
-  });
   const holdingsQ = useQuery({
     queryKey: ["holdings", currency, sort, order, selectedAccounts],
     queryFn: () => fetchHoldings(currency, sort, order, selectedAccounts ?? undefined),
+  });
+
+  const filteredHoldings = useMemo(() => {
+    const all = holdingsQ.data?.holdings ?? [];
+    if (!allocationFilter) return all;
+    return all.filter((h) => (h[allocationFilter.dimension] ?? "Unknown") === allocationFilter.value);
+  }, [holdingsQ.data, allocationFilter]);
+
+  const filteredTotals = useMemo(() => {
+    if (!filteredHoldings.length) return undefined;
+    const totalValue = filteredHoldings.reduce((s, h) => s + (h.current_value ?? 0), 0);
+    const totalBook = filteredHoldings.reduce((s, h) => s + h.book_cost, 0);
+    return {
+      book_cost: totalBook,
+      current_value: totalValue,
+      gain: totalValue - totalBook,
+      gain_pct: totalBook ? (totalValue - totalBook) / Math.abs(totalBook) : null,
+    };
+  }, [filteredHoldings]);
+
+  const sliceSymbols = useMemo(() => {
+    if (!allocationFilter || !filteredHoldings.length) return undefined;
+    return Array.from(new Set(filteredHoldings.map((h) => h.symbol)));
+  }, [allocationFilter, filteredHoldings]);
+
+  const summaryQ = useQuery({
+    queryKey: ["summary", currency, selectedAccounts, sliceSymbols],
+    queryFn: () => fetchSummary(currency, selectedAccounts ?? undefined, sliceSymbols),
+  });
+  const historyQ = useQuery({
+    queryKey: ["history", period, currency, selectedAccounts, sliceSymbols],
+    queryFn: () => fetchHistory(period, currency, selectedAccounts ?? undefined, sliceSymbols),
   });
   const statusQ = useQuery({
     queryKey: ["status"],
@@ -111,7 +140,7 @@ export default function App() {
 
   const error = summaryQ.error || historyQ.error || holdingsQ.error;
 
-  // Reset chart zoom whenever the underlying dataset changes
+  // Reset chart zoom and allocation filter whenever the underlying dataset changes
   const handlePeriod = (p: Period) => {
     setPeriod(p);
     setZoom(null);
@@ -119,13 +148,20 @@ export default function App() {
   const handleCurrency = (c: Currency) => {
     setCurrency(c);
     setZoom(null);
+    setAllocationFilter(null);
   };
   const handleBrokerages = (ids: string[] | null) => {
     setSelectedBrokerages(ids);
     setZoom(null);
+    setAllocationFilter(null);
   };
   const handleTypes = (ids: string[] | null) => {
     setSelectedTypes(ids);
+    setZoom(null);
+    setAllocationFilter(null);
+  };
+  const handleAllocationFilter = (f: AllocationFilter | null) => {
+    setAllocationFilter(f);
     setZoom(null);
   };
 
@@ -168,6 +204,17 @@ export default function App() {
         <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>
           Select accounts above to view portfolio data.
         </div>
+      ) : allocationFilter && filteredHoldings.length === 0 ? (
+        <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>
+          No holdings match the selected allocation filter.
+          <button
+            onClick={() => setAllocationFilter(null)}
+            className="ml-3 rounded px-2 py-0.5 text-xs"
+            style={{ background: "color-mix(in srgb, var(--gold) 18%, transparent)", color: "var(--ink)" }}
+          >
+            Clear
+          </button>
+        </div>
       ) : (
         <>
           <PortfolioBalance
@@ -180,14 +227,25 @@ export default function App() {
             onMethod={setMethod}
           />
           <PerformanceChart history={historyQ.data} zoom={zoom} onZoom={setZoom} method={method} />
-          <HoldingsTable
-            holdings={holdingsQ.data?.holdings}
-            totals={holdingsQ.data?.totals}
-            sort={sort}
-            order={order}
-            onSort={handleSort}
-          />
+          <CollapsibleSection title="Holdings" open={holdingsOpen} onToggle={() => setHoldingsOpen((o) => !o)}>
+            <HoldingsTable
+              holdings={holdingsQ.isLoading ? undefined : filteredHoldings}
+              totals={holdingsQ.isLoading ? undefined : filteredTotals}
+              sort={sort}
+              order={order}
+              onSort={handleSort}
+            />
+          </CollapsibleSection>
         </>
+      )}
+      {!nothingSelected && (
+        <CollapsibleSection title="Allocation" open={allocationOpen} onToggle={() => setAllocationOpen((o) => !o)}>
+          <AllocationSection
+            holdings={holdingsQ.data?.holdings}
+            filter={allocationFilter}
+            onFilter={handleAllocationFilter}
+          />
+        </CollapsibleSection>
       )}
       <div className="mt-8 text-xs" style={{ color: "var(--ink-soft)" }}>
         Prices via yfinance. Returns computed from full transaction history.
