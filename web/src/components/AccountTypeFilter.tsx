@@ -6,6 +6,9 @@ interface Props {
   accounts: Account[] | undefined;
   selected: string[] | null;
   onChange: (ids: string[] | null) => void;
+  /** Currently selected brokerages from the sibling filter.
+   *  Counts update to reflect only accounts matching this selection. */
+  brokerageFilter?: string[] | null;
 }
 
 export interface TypeCurrency {
@@ -31,7 +34,7 @@ export function typeCurrencyCombos(accounts: Account[]): TypeCurrency[] {
   return [...seen.values()].sort((x, y) => x.label.localeCompare(y.label));
 }
 
-export default function AccountTypeFilter({ accounts, selected, onChange }: Props) {
+export default function AccountTypeFilter({ accounts, selected, onChange, brokerageFilter = null }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -52,9 +55,12 @@ export default function AccountTypeFilter({ accounts, selected, onChange }: Prop
 
   const label = allSelected ? "All Types" : `${selCount} of ${total} Types`;
 
+  const inBrokerageFilter = (a: Account) =>
+    brokerageFilter === null || brokerageFilter.includes(a.brokerage);
+
   const holdingsFor = (key: string) =>
     (accounts ?? [])
-      .filter((a) => `${a.account_type}__${a.currency}` === key)
+      .filter((a) => `${a.account_type}__${a.currency}` === key && inBrokerageFilter(a))
       .reduce((n, a) => n + a.holding_count, 0);
 
   const isChecked = (key: string) =>

@@ -1,6 +1,6 @@
 ﻿import { useMemo, useState } from "react";
 import { Area, AreaChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { HistoryPoint, PortfolioHistory } from "../lib/types";
+import type { HistoryPoint, PortfolioHistory, ReturnMethod } from "../lib/types";
 
 export interface ZoomRange {
   start: string;
@@ -11,6 +11,7 @@ interface Props {
   history: PortfolioHistory | undefined;
   zoom: ZoomRange | null;
   onZoom: (z: ZoomRange | null) => void;
+  method: ReturnMethod;
 }
 
 function fmtMoney(v: number): string {
@@ -23,9 +24,7 @@ function fmtDate(iso: string): string {
 }
 
 export function zoomedReturn(series: HistoryPoint[], zoom: ZoomRange | null): number | null {
-  const pts = zoom
-    ? series.filter((p) => p.date >= zoom.start && p.date <= zoom.end)
-    : series;
+  const pts = zoom ? series.filter((p) => p.date >= zoom.start && p.date <= zoom.end) : series;
   if (pts.length < 2) return null;
   const first = pts[0].value;
   const last = pts[pts.length - 1].value;
@@ -33,7 +32,11 @@ export function zoomedReturn(series: HistoryPoint[], zoom: ZoomRange | null): nu
   return (last - first) / Math.abs(first);
 }
 
-export default function PerformanceChart({ history, zoom, onZoom }: Props) {
+function returnForPoint(pt: HistoryPoint, method: ReturnMethod): number | null | undefined {
+  return method === "xirr" ? pt.return_xirr : pt.return_twr;
+}
+
+export default function PerformanceChart({ history, zoom, onZoom, method }: Props) {
   const [refLeft, setRefLeft] = useState<string | null>(null);
   const [refRight, setRefRight] = useState<string | null>(null);
 
@@ -75,6 +78,7 @@ export default function PerformanceChart({ history, zoom, onZoom }: Props) {
   }
 
   const zoomRet = zoomedReturn(fullData, zoom);
+  const returnLabel = method === "xirr" ? "XIRR" : "TWR";
 
   return (
     <section className="mt-8">
@@ -144,13 +148,40 @@ export default function PerformanceChart({ history, zoom, onZoom }: Props) {
               domain={["auto", "auto"]}
             />
             <Tooltip
-              formatter={(value) => [fmtMoney(Number(value)), "Value"]}
-              labelFormatter={(label) => fmtDate(String(label))}
-              contentStyle={{
-                background: "var(--bg)",
-                border: "1px solid color-mix(in srgb, var(--ink) 12%, transparent)",
-                borderRadius: 4,
-                fontSize: 13,
+              content={({ active, payload, label }) => {
+                if (!active || !payload?.length) return null;
+                const pt = payload[0].payload as HistoryPoint;
+                const ret = returnForPoint(pt, method);
+                const showRet = ret !== null && ret !== undefined;
+                return (
+                  <div
+                    style={{
+                      background: "var(--bg)",
+                      border: "1px solid color-mix(in srgb, var(--ink) 12%, transparent)",
+                      borderRadius: 4,
+                      fontSize: 13,
+                      padding: "8px 12px",
+                    }}
+                  >
+                    <div style={{ marginBottom: 4 }}>{fmtDate(String(label))}</div>
+                    <div>Value: {fmtMoney(pt.value)}</div>
+                    {pt.net_deposits !== null &&
+                      pt.net_deposits !== undefined &&
+                      Math.abs(pt.net_deposits) > 0.005 && (
+                        <div>Net deposits: {fmtMoney(pt.net_deposits)}</div>
+                      )}
+                    {showRet && (
+                      <div
+                        style={{
+                          color: ret >= 0 ? "var(--moss)" : "var(--brick)",
+                        }}
+                      >
+                        {returnLabel}: {ret >= 0 ? "+" : ""}
+                        {(ret * 100).toFixed(2)}%
+                      </div>
+                    )}
+                  </div>
+                );
               }}
             />
             <Area
@@ -178,4 +209,3 @@ export default function PerformanceChart({ history, zoom, onZoom }: Props) {
     </section>
   );
 }
-

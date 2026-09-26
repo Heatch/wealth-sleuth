@@ -2,14 +2,13 @@
 
 export type Currency = "CAD" | "USD";
 export type Period = "1m" | "6m" | "ytd" | "1y" | "3y" | "all";
-export type ReturnMethod = "twr" | "mwr" | "naive";
+export type ReturnMethod = "twr" | "xirr";
 export type HoldingSort = "value" | "gain" | "gain_pct" | "book_cost" | "symbol" | "weight" | "name" | "shares";
 export type SortOrder = "asc" | "desc";
 
 export interface PeriodReturns {
   twr: number | null;
-  mwr: number | null;
-  naive: number | null;
+  xirr: number | null;
 }
 
 export interface PortfolioSummary {
@@ -26,6 +25,9 @@ export interface PortfolioSummary {
 export interface HistoryPoint {
   date: string;
   value: number;
+  net_deposits?: number | null;
+  return_xirr?: number | null;
+  return_twr?: number | null;
 }
 
 export interface PortfolioHistory {
@@ -76,4 +78,3 @@ export interface Account {
   holding_count: number;
   has_holdings: boolean;
 }
-

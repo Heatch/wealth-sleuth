@@ -1,8 +1,21 @@
-﻿"""Return calculations: time-weighted (TWR), money-weighted (MWR/IRR), naive."""
+﻿"""Return calculations: Time-Weighted Return (TWR) and XIRR (money-weighted).
 
-import sqlite3
+Both metrics are built from the daily valuation series produced by
+`api.services.valuation`.  TWR links daily sub-period returns so it reflects
+pure investment performance, while XIRR solves for the internal rate of return
+using the actual dates of external cash flows, so it reflects the investor's
+personal return.
+"""
+
 from datetime import date
 from typing import Optional
+
+PERIODS = ("1m", "6m", "ytd", "1y", "3y", "all")
+
+
+def parse_date(s: str) -> date:
+    """Parse YYYY-MM-DD to a date object."""
+    return date(int(s[:4]), int(s[5:7]), int(s[8:10]))
 
 
 def period_start(period: str, series: list, today: str) -> str:
@@ -36,18 +49,126 @@ def slice_series(series: list, start: str) -> list:
     return [(d, v) for d, v in series if d >= start]
 
 
-def naive_return(start_value: float, end_value: float, net_flows: float) -> Optional[float]:
-    """Modified Dietz simple return: (end - start - flows) / |start + 0.5*flows|."""
-    denom = abs(start_value + 0.5 * net_flows)
-    if denom == 0:
+def _years_between(dates: list[date], base: date) -> list[float]:
+    return [(d - base).days / 365.0 for d in dates]
+
+
+def _npv(rate: float, amounts: list[float], years: list[float]) -> float:
+    """Net present value at a given annualized rate."""
+    if rate <= -1.0:
+        rate = -0.999999999999
+    total = 0.0
+    for amt, yr in zip(amounts, years):
+        total += amt / ((1.0 + rate) ** yr)
+    return total
+
+
+def _solve_xirr(dates: list[date], amounts: list[float]) -> Optional[float]:
+    """Solve for the annualized IRR of a cash-flow stream.
+
+    Uses bisection with an expanding upper bound, which is robust enough
+    for both small personal portfolios and very short/high-return periods.
+    Returns None when no meaningful root exists.
+    """
+    if len(dates) < 2 or len(amounts) != len(dates):
         return None
-    return (end_value - start_value - net_flows) / denom
+
+    base = dates[0]
+    years = _years_between(dates, base)
+    days = years[-1] * 365.0
+    if days <= 0:
+        return None
+
+    # Trivial case: only an initial and final value.
+    if len(amounts) == 2:
+        if amounts[0] == 0.0:
+            return None
+        ratio = -amounts[1] / amounts[0]
+        if ratio <= 0.0:
+            return None
+        return ratio ** (1.0 / years[1]) - 1.0
+
+    npv0 = sum(amounts)
+    if abs(npv0) < 1e-9:
+        return 0.0
+
+    lo, hi = -0.9999, 100.0
+    f_lo = _npv(lo, amounts, years)
+    f_hi = _npv(hi, amounts, years)
+
+    # Expand the bracket until we find a sign change.
+    max_hi = 1e9
+    while f_lo * f_hi > 0.0 and hi < max_hi:
+        hi *= 2.0
+        if hi > max_hi:
+            hi = max_hi
+        f_hi = _npv(hi, amounts, years)
+        if f_hi == f_lo:
+            break
+
+    if f_lo * f_hi <= 0.0:
+        for _ in range(120):
+            mid = (lo + hi) / 2.0
+            f_mid = _npv(mid, amounts, years)
+            if abs(f_mid) < 1e-9:
+                return mid
+            if f_lo * f_mid <= 0.0:
+                hi, f_hi = mid, f_mid
+            else:
+                lo, f_lo = mid, f_mid
+        return (lo + hi) / 2.0
+
+    # No bracket found; XIRR is undefined for this cash-flow pattern.
+    return None
+
+
+def xirr_return(sub: list, flows: dict) -> Optional[float]:
+    """Annualized XIRR for a valuation sub-series and external cash flows.
+
+    Cash-flow convention (investor perspective):
+      * start value  -> negative (money invested)
+      * deposits     -> negative (additional money invested)
+      * withdrawals  -> positive (money returned)
+      * end value    -> positive (money returned)
+    """
+    if len(sub) < 2:
+        return None
+
+    start_date = parse_date(sub[0][0])
+    end_date = parse_date(sub[-1][0])
+    if (end_date - start_date).days <= 0:
+        return None
+
+    dates = [start_date]
+    amounts = [-sub[0][1]]
+
+    # Include any cash flow that occurred on the start date at t=0.
+    start_flow = flows.get(sub[0][0], 0.0) or 0.0
+    if start_flow:
+        amounts[0] -= start_flow
+
+    for d, _ in sub[1:]:
+        cf = flows.get(d, 0.0) or 0.0
+        if cf:
+            dates.append(parse_date(d))
+            amounts.append(-cf)
+
+    dates.append(end_date)
+    amounts.append(sub[-1][1])
+
+    return _solve_xirr(dates, amounts)
 
 
 def twr_return(sub: list, flows: dict) -> Optional[float]:
-    """Time-weighted return via daily geometric linking (Modified Dietz, W=0.5)."""
+    """Cumulative Time-Weighted Return via daily geometric linking.
+
+    Each daily sub-period return uses the Modified-Dietz midpoint assumption
+    for cash flows, which is the best available approximation when only
+    end-of-day valuations are known.
+    """
     if len(sub) < 2:
         return None
+
     linked = 1.0
     any_valid = False
     for i in range(1, len(sub)):
@@ -55,94 +176,123 @@ def twr_return(sub: list, flows: dict) -> Optional[float]:
         cur_d, cur_v = sub[i]
         cf = flows.get(cur_d, 0.0) or 0.0
         denom = prev_v + 0.5 * cf
-        if denom == 0:
+        if denom == 0.0:
             continue
         r = (cur_v - prev_v - cf) / denom
         linked *= 1.0 + r
         any_valid = True
+
     if not any_valid:
         return None
     return linked - 1.0
 
 
-def mwr_return(sub: list, flows: dict) -> Optional[float]:
-    """Money-weighted return (period return, de-annualized IRR) via bisection.
-
-    Solves for the annualized IRR, then converts to the cumulative period
-    return so it is directly comparable with TWR: (1+r)^(days/365) - 1.
-    """
+def period_returns(sub: list, flows: dict) -> dict:
+    """Compute XIRR and TWR for a pre-sliced sub-series."""
     if len(sub) < 2:
-        return None
-    start_d = sub[0][0]
-    end_d, end_v = sub[-1]
-    days_total = (parse_date(end_d) - parse_date(start_d)).days
-    if days_total <= 0:
-        return naive_return(sub[0][1], end_v, sum(flows.get(d, 0.0) or 0.0 for d, _ in sub))
-    start_v = sub[0][1]
-    pts = [(-start_v, 0.0)]
-    for d, _ in sub[1:]:
-        cf = flows.get(d, 0.0) or 0.0
-        if cf:
-            t = (parse_date(d) - parse_date(start_d)).days / 365.0
-            pts.append((-cf, t))
-    t_end = days_total / 365.0
-    pts.append((end_v, t_end))
-
-    def npv(r):
-        total = 0.0
-        for amt, t in pts:
-            total += amt / ((1.0 + r) ** t) if t > 0 else amt
-        return total
-
-    lo, hi = -0.9999, 10.0
-    f_lo, f_hi = npv(lo), npv(hi)
-    if f_lo * f_hi > 0:
-        return naive_return(start_v, end_v, sum(flows.get(d, 0.0) or 0.0 for d, _ in sub))
-    annualized = None
-    for _ in range(200):
-        mid = (lo + hi) / 2.0
-        f_mid = npv(mid)
-        if abs(f_mid) < 1e-9:
-            annualized = mid
-            break
-        if f_lo * f_mid <= 0:
-            hi, f_hi = mid, f_mid
-        else:
-            lo, f_lo = mid, f_mid
-    if annualized is None:
-        annualized = (lo + hi) / 2.0
-    return (1.0 + annualized) ** (days_total / 365.0) - 1.0
-
-
-def parse_date(s: str):
-    """Parse YYYY-MM-DD to date."""
-    from datetime import date as _date
-    return _date(int(s[:4]), int(s[5:7]), int(s[8:10]))
-
-
-def period_returns(series: list, flows: dict, period: str) -> dict:
-    """Compute twr/mwr/naive for one period. Returns dict of floats/None."""
-    if not series:
-        return {"twr": None, "mwr": None, "naive": None}
-    today = series[-1][0]
-    start = period_start(period, series, today)
-    sub = slice_series(series, start)
-    if len(sub) < 2:
-        return {"twr": None, "mwr": None, "naive": None}
-    start_v = sub[0][1]
-    end_v = sub[-1][1]
-    net_flows = sum(flows.get(d, 0.0) or 0.0 for d, _ in sub[1:])
+        return {"xirr": None, "twr": None}
     return {
+        "xirr": xirr_return(sub, flows),
         "twr": twr_return(sub, flows),
-        "mwr": mwr_return(sub, flows),
-        "naive": naive_return(start_v, end_v, net_flows),
     }
 
 
 def all_period_returns(series: list, flows: dict) -> dict:
-    """Compute returns for every chart period toggle."""
+    """Compute XIRR/TWR for every chart period toggle."""
     out = {}
-    for p in ("1m", "6m", "ytd", "1y", "3y", "all"):
-        out[p] = period_returns(series, flows, p)
+    if not series:
+        for p in PERIODS:
+            out[p] = {"xirr": None, "twr": None}
+        return out
+    today = series[-1][0]
+    for p in PERIODS:
+        start = period_start(p, series, today)
+        sub = slice_series(series, start)
+        out[p] = period_returns(sub, flows)
     return out
 
+
+def point_returns(sub: list, flows: dict) -> list[dict]:
+    """Cumulative XIRR and TWR from the first point of *sub* to each point.
+
+    The first point has a TWR of 0% and no XIRR (too short a horizon).
+    """
+    if not sub:
+        return []
+
+    flow_list = [(d, flows.get(d, 0.0) or 0.0) for d, _ in sub]
+    results = []
+    for i in range(len(sub)):
+        if i == 0:
+            results.append({"xirr": None, "twr": 0.0})
+            continue
+        point_sub = sub[: i + 1]
+        point_flows = {d: v for d, v in flow_list[: i + 1] if v}
+        results.append({
+            "xirr": xirr_return(point_sub, point_flows),
+            "twr": twr_return(point_sub, point_flows),
+        })
+    return results
+
+
+def portfolio_returns(series: list, flows: dict, deposits: dict, undated_dep: float) -> dict:
+    """Full return package used by the API: every period + per-period chart data."""
+    out = {
+        "periods": all_period_returns(series, flows),
+        "history": {},
+    }
+    if not series:
+        for p in PERIODS:
+            out["history"][p] = []
+        return out
+
+    today = series[-1][0]
+    # Cumulative net deposits (including security transfers) for the chart.
+    cum = undated_dep
+    cum_map: dict[str, float] = {}
+    for d, _ in series:
+        cum += deposits.get(d, 0.0) or 0.0
+        cum_map[d] = cum
+
+    for p in PERIODS:
+        start = period_start(p, series, today)
+        sub = slice_series(series, start)
+        if len(sub) < 2:
+            out["history"][p] = []
+            continue
+        pret = point_returns(sub, flows)
+        out["history"][p] = [
+            {
+                "date": d,
+                "value": v,
+                "net_deposits": cum_map[d],
+                "return_xirr": r["xirr"],
+                "return_twr": r["twr"],
+            }
+            for (d, v), r in zip(sub, pret)
+        ]
+    return out
+
+
+def portfolio_returns_cached(currency: str = "CAD", account_ids: Optional[list] = None) -> dict:
+    """Cache the full return package per (currency, account filter).
+
+    The underlying daily valuations are also cached, so the full dashboard
+    (summary + history) shares one computation.
+    """
+    from api.cache import cache
+    from api.services.valuation import daily_portfolio_values_cached
+
+    acct_key = tuple(sorted(account_ids)) if account_ids else "all"
+    key = f"returns_{currency}_{acct_key}"
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
+    series, flows, cash_total, _undated_base, undated_dep, deposits = daily_portfolio_values_cached(
+        currency, account_ids
+    )
+    result = portfolio_returns(series, flows, deposits, undated_dep)
+    result["cash_total"] = cash_total
+    cache.set(key, result)
+    return result

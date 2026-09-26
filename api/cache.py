@@ -8,10 +8,11 @@ class PortfolioCache:
     """TTL cache with manual invalidation.
 
     Caches expensive computations (valuation series, price maps) that only
-    change when batch scripts run. Default TTL is 5 minutes.
+    change when batch scripts run. Default TTL is 30 minutes (prices update
+    at most once per day).
     """
 
-    def __init__(self, default_ttl: float = 300.0):
+    def __init__(self, default_ttl: float = 1800.0):
         self._data = {}
         self._timestamps = {}
         self._lock = Lock()
@@ -52,11 +53,13 @@ class PortfolioCache:
         """Clear caches that depend on transaction data."""
         self.invalidate("valuation_*")
         self.invalidate("holdings_*")
+        self.invalidate("returns_*")
 
     def invalidate_on_price_update(self):
         """Clear caches that depend on price data."""
         self.invalidate("valuation_*")
         self.invalidate("price_map")
+        self.invalidate("returns_*")
 
 
 # Global cache instance

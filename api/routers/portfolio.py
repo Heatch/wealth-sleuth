@@ -1,4 +1,4 @@
-﻿"""Portfolio API router: summary, history, holdings."""
+"""Portfolio API router: summary, history, holdings."""
 
 import sqlite3
 
@@ -18,7 +18,7 @@ def _period_key(period: str) -> str:
 
 
 def _to_period_returns(d: dict) -> PeriodReturns:
-    return PeriodReturns(twr=d.get("twr"), mwr=d.get("mwr"), naive=d.get("naive"))
+    return PeriodReturns(twr=d.get("twr"), xirr=d.get("xirr"))
 
 
 @router.get("/accounts", response_model=AccountsResponse)
@@ -62,7 +62,7 @@ def get_summary(
         account_ids = parse_account_ids(accounts)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    series, flows, cash_total = valuation_service.daily_portfolio_values_cached(cur, account_ids)
+    series, _flows, cash_total, _undated, _undated_dep, _deposits = valuation_service.daily_portfolio_values_cached(cur, account_ids)
     if not series:
         raise HTTPException(status_code=404, detail="No portfolio data")
     end_value = series[-1][1]
@@ -70,7 +70,8 @@ def get_summary(
     change = end_value - prev_value
     change_pct = (change / abs(prev_value)) if prev_value else None
     fx_rate, as_of = fx_service.get_latest_fx_rate(conn)
-    raw = returns_service.all_period_returns(series, flows)
+    returns_result = returns_service.portfolio_returns_cached(cur, account_ids)
+    raw = returns_result["periods"]
     mapped = {_period_key(k): _to_period_returns(v) for k, v in raw.items()}
     return PortfolioSummary(
         total_value=end_value,
@@ -98,15 +99,24 @@ def get_history(
         account_ids = parse_account_ids(accounts)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    series, flows, _cash = valuation_service.daily_portfolio_values_cached(cur, account_ids)
-    if not series:
+    returns_result = returns_service.portfolio_returns_cached(cur, account_ids)
+    points_data = returns_result["history"].get(per, [])
+    if not points_data:
         raise HTTPException(status_code=404, detail="No portfolio data")
-    start = returns_service.period_start(period, series, series[-1][0])
-    sub = returns_service.slice_series(series, start)
+    points = [
+        HistoryPoint(
+            date=p["date"],
+            value=p["value"],
+            net_deposits=p["net_deposits"],
+            return_xirr=p["return_xirr"],
+            return_twr=p["return_twr"],
+        )
+        for p in points_data
+    ]
     return PortfolioHistory(
-        series=[HistoryPoint(date=d, value=v) for d, v in sub],
-        period_start_value=sub[0][1] if sub else None,
-        period_end_value=sub[-1][1] if sub else None,
+        series=points,
+        period_start_value=points[0].value if points else None,
+        period_end_value=points[-1].value if points else None,
         currency=cur,
     )
 

@@ -77,9 +77,9 @@ def load_transactions(conn, account_ids=None):
 def apply_txn(t, positions, cash):
     """Apply one txn to positions/cash. Returns external flow (deposit/withdrawal net).
 
-    All deposits/withdrawals count as external flows (they link to CASH
-    securities, not NULL). Cash-affecting `other` and `transfer` rows with
-    no security (fees, cash journals) also count. Security trades never do.
+    Only true deposits/withdrawals count as external flows. Inter-account
+    cash transfers (e.g., CONT. TO TFSA) and other cash journals are
+    internal movements, not money entering/leaving the portfolio.
     """
     ttype = t["type"]
     qty = t["quantity"] or 0.0
@@ -95,8 +95,6 @@ def apply_txn(t, positions, cash):
     elif ttype == "transfer" and sid is not None:
         positions[(acct, sid)] = positions.get((acct, sid), 0.0) + qty
     if ttype in ("deposit", "withdrawal"):
-        return net
-    if ttype in ("other", "transfer") and sid is None and net != 0:
         return net
     return 0.0
 
@@ -192,11 +190,39 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None):
             undated.append(t)
     first, last = get_date_range(conn, account_ids)
     if not first or not last:
-        return [], {}
+        return [], {}, 0.0, {}
     positions = {}
     cash = {}
+    # Undated external flows (e.g., Disnat contributions with Trade Date
+    # "-") fund the opening balances but have no date, so they can never
+    # appear in the per-date flows dict used by TWR/MWR. Track them
+    # separately as the display baseline for cumulative net deposits.
+    undated_by_ccy: dict[str, float] = {}
+    undated_dep_by_ccy: dict[str, float] = {}
     for t in undated:
-        apply_txn(t, positions, cash)
+        raw_flow = apply_txn(t, positions, cash)
+        if raw_flow == 0.0:
+            # Check for security transfers (DLR journals) — value at most
+            # recent price for the deposits display.
+            if (
+                t["type"] == "transfer"
+                and t["security_id"] is not None
+                and t["quantity"]
+            ):
+                sid = t["security_id"]
+                dates = [d for (s, d) in price_map.keys() if s == sid]
+                if dates:
+                    latest = max(dates)
+                    price = price_map.get((sid, latest))
+                    if price is not None:
+                        sec = secs.get(sid)
+                        if sec:
+                            val = t["quantity"] * price
+                            ccy = sec["currency"]
+                            undated_dep_by_ccy[ccy] = undated_dep_by_ccy.get(ccy, 0.0) + val
+            continue
+        undated_by_ccy[t["currency"]] = undated_by_ccy.get(t["currency"], 0.0) + raw_flow
+        undated_dep_by_ccy[t["currency"]] = undated_dep_by_ccy.get(t["currency"], 0.0) + raw_flow
     all_dates = set(by_date.keys())
     for (sid, d) in price_map.keys():
         all_dates.add(d)
@@ -204,21 +230,51 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None):
     price_index = build_price_index(price_map)
     series = []
     flows = {}
+    deposits = {}
     for d in all_dates:
         fx_rate = fx_rate_on_index(fx_dates, fx_rates, d)
         day_flow = 0.0
+        day_dep = 0.0
         for t in by_date.get(d, []):
             raw_flow = apply_txn(t, positions, cash)
             if raw_flow != 0.0:
                 day_flow += convert(raw_flow, t["currency"], currency, fx_rate)
+                day_dep += convert(raw_flow, t["currency"], currency, fx_rate)
+            elif (
+                t["type"] == "transfer"
+                and t["security_id"] is not None
+                and t["quantity"]
+            ):
+                # Security transfer (e.g., Nobert's Gambit journal): value the
+                # shares at market price so the destination account shows the
+                # economic deposit. Kept OUT of `flows` (TWR/MWR untouched).
+                price = price_on(price_index, price_map, t["security_id"], d)
+                if price is not None:
+                    sec = secs.get(t["security_id"])
+                    if sec:
+                        val = t["quantity"] * price
+                        day_dep += convert(val, sec["currency"], currency, fx_rate)
         flows[d] = day_flow
+        deposits[d] = day_dep
         total = value_positions(positions, secs, price_map, price_index, d, currency, fx_rate)
         total += value_cash(cash, currency, fx_rate)
         series.append((d, total))
+
     # Final cash balance in display currency (for the cash totals line)
     last_fx = fx_rate_on_index(fx_dates, fx_rates, last) if all_dates else 1.0
     cash_total = value_cash(cash, currency, last_fx)
-    return series, flows, cash_total
+    # Undated baseline converted at the first series date's FX rate.
+    # Kept OUT of `flows` so TWR/MWR math is untouched.
+    first_fx = fx_rate_on_index(fx_dates, fx_rates, first) if all_dates else 1.0
+    undated_base = sum(
+        convert(amt, ccy, currency, first_fx)
+        for ccy, amt in undated_by_ccy.items()
+    )
+    undated_dep_base = sum(
+        convert(amt, ccy, currency, first_fx)
+        for ccy, amt in undated_dep_by_ccy.items()
+    )
+    return series, flows, cash_total, undated_base, undated_dep_base, deposits
 
 
 def daily_portfolio_values_cached(currency="CAD", account_ids=None):

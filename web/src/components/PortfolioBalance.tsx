@@ -18,10 +18,26 @@ const PERIOD_KEYS: Record<Period, string> = {
   all: "all",
 };
 
-const METHODS: { key: ReturnMethod; label: string; hint: string }[] = [
-  { key: "twr", label: "Time-weighted", hint: "Investment performance, ignoring deposit timing" },
-  { key: "mwr", label: "Money-weighted", hint: "Your personal return, incl. deposit timing" },
-  { key: "naive", label: "Simple", hint: "(Value - invested) / invested" },
+const METHODS: {
+  key: ReturnMethod;
+  label: string;
+  title: string;
+  body: string;
+}[] = [
+  {
+    key: "xirr",
+    label: "XIRR",
+    title: "Money-weighted return",
+    body:
+      "Best for seeing the actual annualized return on your money, including the real impact of deposits and withdrawals.",
+  },
+  {
+    key: "twr",
+    label: "TWR",
+    title: "Time-weighted return",
+    body:
+      "Best for evaluating the portfolio's underlying performance because it removes the effect of when cash moved in or out.",
+  },
 ];
 
 function fmtMoney(v: number | null | undefined): string {
@@ -46,24 +62,24 @@ interface Props {
   onMethod: (m: ReturnMethod) => void;
 }
 
-export default function PortfolioBalance({ summary, currency, onCurrency, period, onPeriod, method, onMethod }: Props) {
+export default function PortfolioBalance({
+  summary,
+  currency,
+  onCurrency,
+  period,
+  onPeriod,
+  method,
+  onMethod,
+}: Props) {
   if (!summary) {
     return <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>Loading portfolio…</div>;
   }
+
   const ret = summary.returns[PERIOD_KEYS[period]];
-  // When TWR/MWR/naive converge (no external cash flows in the period),
-  // hide the method toggle and show a single value.
-  const methodVals = ret
-    ? [ret.twr, ret.mwr, ret.naive].filter(
-        (v): v is number => v !== null && v !== undefined
-      )
-    : [];
-  const converged =
-    methodVals.length >= 2 &&
-    Math.max(...methodVals) - Math.min(...methodVals) < 0.0001;
-  const retVal = converged ? methodVals[0] : ret ? ret[method] : null;
+  const retVal = ret ? ret[method] : null;
   const gain = retVal !== null && retVal !== undefined;
   const dayGain = (summary.total_change_today ?? 0) >= 0;
+
   return (
     <section>
       <div className="flex items-end justify-between">
@@ -113,12 +129,11 @@ export default function PortfolioBalance({ summary, currency, onCurrency, period
             </button>
           ))}
         </div>
-        {!converged && (
-          <div className="flex gap-1">
-            {METHODS.map((m) => (
+
+        <div className="flex gap-1">
+          {METHODS.map((m) => (
+            <div key={m.key} className="group relative">
               <button
-                key={m.key}
-                title={m.hint}
                 onClick={() => onMethod(m.key)}
                 className="rounded px-2.5 py-1 text-sm"
                 style={{
@@ -129,9 +144,24 @@ export default function PortfolioBalance({ summary, currency, onCurrency, period
               >
                 {m.label}
               </button>
-            ))}
-          </div>
-        )}
+              <div
+                className="pointer-events-none absolute left-1/2 top-full z-10 mt-2 hidden w-64 -translate-x-1/2 rounded p-3 text-left group-hover:block"
+                style={{
+                  background: "var(--bg)",
+                  border: "1px solid color-mix(in srgb, var(--ink) 12%, transparent)",
+                }}
+              >
+                <div className="text-xs" style={{ fontWeight: 600, color: "var(--ink)" }}>
+                  {m.title}
+                </div>
+                <div className="mt-1 text-xs" style={{ color: "var(--ink-soft)", lineHeight: 1.4 }}>
+                  {m.body}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
         <div className="text-2xl tnum" style={{ color: gain && (retVal ?? 0) >= 0 ? "var(--moss)" : "var(--brick)" }}>
           {fmtPct(retVal)}
         </div>
@@ -139,4 +169,3 @@ export default function PortfolioBalance({ summary, currency, onCurrency, period
     </section>
   );
 }
-

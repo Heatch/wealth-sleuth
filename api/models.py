@@ -7,8 +7,7 @@ from pydantic import BaseModel
 
 class PeriodReturns(BaseModel):
     twr: Optional[float] = None
-    mwr: Optional[float] = None
-    naive: Optional[float] = None
+    xirr: Optional[float] = None
 
 
 class ReturnsMap(BaseModel):
@@ -37,6 +36,9 @@ class PortfolioSummary(BaseModel):
 class HistoryPoint(BaseModel):
     date: str
     value: float
+    net_deposits: Optional[float] = None
+    return_xirr: Optional[float] = None
+    return_twr: Optional[float] = None
 
 
 class PortfolioHistory(BaseModel):

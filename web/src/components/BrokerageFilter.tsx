@@ -6,9 +6,12 @@ interface Props {
   accounts: Account[] | undefined;
   selected: string[] | null;
   onChange: (ids: string[] | null) => void;
+  /** Currently selected type keys ("tfsa__CAD") from the sibling filter.
+   *  Counts update to reflect only accounts matching this selection. */
+  typeFilter?: string[] | null;
 }
 
-export default function BrokerageFilter({ accounts, selected, onChange }: Props) {
+export default function BrokerageFilter({ accounts, selected, onChange, typeFilter = null }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -29,8 +32,13 @@ export default function BrokerageFilter({ accounts, selected, onChange }: Props)
 
   const label = allSelected ? "All Brokerages" : `${selCount} of ${total} Brokerages`;
 
+  const inTypeFilter = (a: Account) =>
+    typeFilter === null || typeFilter.includes(`${a.account_type}__${a.currency}`);
+
   const holdingsFor = (b: string) =>
-    (accounts ?? []).filter((a) => a.brokerage === b).reduce((n, a) => n + a.holding_count, 0);
+    (accounts ?? [])
+      .filter((a) => a.brokerage === b && inTypeFilter(a))
+      .reduce((n, a) => n + a.holding_count, 0);
 
   const isChecked = (b: string) =>
     selected === null ? true : selected.includes(b);

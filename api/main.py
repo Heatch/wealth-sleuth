@@ -85,6 +85,17 @@ async def lifespan(app: FastAPI):
     else:
         print("Price data is current.")
 
+    # Pre-warm the valuation and returns caches so the first frontend request is fast.
+    try:
+        from api.services.valuation import daily_portfolio_values_cached
+        from api.services.returns import portfolio_returns_cached
+        for cur in ("CAD", "USD"):
+            daily_portfolio_values_cached(cur)
+            portfolio_returns_cached(cur)
+        print("Valuation + returns caches pre-warmed (CAD + USD).")
+    except Exception as e:
+        print(f"Cache pre-warm failed (will compute on demand): {e}")
+
     Thread(target=_live_price_loop, daemon=True).start()
     print("Live price refresh scheduled (every 15 min).")
 

@@ -139,11 +139,13 @@ export default function App() {
             accounts={accountsQ.data?.accounts}
             selected={selectedBrokerages}
             onChange={handleBrokerages}
+            typeFilter={selectedTypes}
           />
           <AccountTypeFilter
             accounts={accountsQ.data?.accounts}
             selected={selectedTypes}
             onChange={handleTypes}
+            brokerageFilter={selectedBrokerages}
           />
         </div>
         <button
@@ -177,7 +179,7 @@ export default function App() {
             method={method}
             onMethod={setMethod}
           />
-          <PerformanceChart history={historyQ.data} zoom={zoom} onZoom={setZoom} />
+          <PerformanceChart history={historyQ.data} zoom={zoom} onZoom={setZoom} method={method} />
           <HoldingsTable
             holdings={holdingsQ.data?.holdings}
             totals={holdingsQ.data?.totals}
