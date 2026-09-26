@@ -17,6 +17,7 @@ import HoldingsTable from "./components/HoldingsTable";
 import PerformanceChart, { type ZoomRange } from "./components/PerformanceChart";
 import PortfolioBalance from "./components/PortfolioBalance";
 import StatusBanner from "./components/StatusBanner";
+import TFSABanner from "./components/TFSABanner";
 
 export default function App() {
   const [currency, setCurrency] = useState<Currency>("CAD");
@@ -29,6 +30,15 @@ export default function App() {
   const [holdingsOpen, setHoldingsOpen] = useState(true);
   const [allocationOpen, setAllocationOpen] = useState(true);
   const [openCards, setOpenCards] = useState<Record<string, Holding>>({});
+  const [birthYear, setBirthYear] = useState<number>(() => {
+    if (typeof window === "undefined") return 2005;
+    try {
+      const saved = window.localStorage.getItem("pt-tfsa-birth-year");
+      return saved ? parseInt(saved, 10) : 2005;
+    } catch {
+      return 2005;
+    }
+  });
   const [selectedBrokerages, setSelectedBrokerages] = useState<string[] | null>(() => {
     if (typeof window === "undefined") return null;
     try {
@@ -70,6 +80,10 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem("pt-types", JSON.stringify(selectedTypes));
   }, [selectedTypes]);
+
+  useEffect(() => {
+    window.localStorage.setItem("pt-tfsa-birth-year", String(birthYear));
+  }, [birthYear]);
 
   const accountsQ = useQuery({
     queryKey: ["accounts"],
@@ -201,6 +215,13 @@ export default function App() {
 
   const nothingSelected = selectedAccounts !== null && selectedAccounts.length === 0;
 
+  const showTfsaBanner = useMemo(() => {
+    const list = accountsQ.data?.accounts;
+    if (!list || !selectedAccounts || selectedAccounts.length === 0) return false;
+    const selected = list.filter((a) => selectedAccounts.includes(a.id));
+    return selected.every((a) => a.account_type === "tfsa");
+  }, [accountsQ.data, selectedAccounts]);
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-8">
       <div className="mb-6 flex items-center justify-between">
@@ -234,6 +255,13 @@ export default function App() {
         </div>
       ) : null}
       <StatusBanner status={statusQ.data} />
+      {showTfsaBanner && !nothingSelected && (
+        <TFSABanner
+          birthYear={birthYear}
+          onBirthYear={setBirthYear}
+          accountIds={selectedAccounts}
+        />
+      )}
       {nothingSelected ? (
         <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>
           Select accounts above to view portfolio data.

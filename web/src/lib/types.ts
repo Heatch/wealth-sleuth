@@ -139,6 +139,20 @@ export interface SecurityHistory {
   series: SecurityHistoryPoint[];
 }
 
+export interface TfsaSummary {
+  birth_year: number;
+  year_turned_18: number;
+  first_contribution_year: number;
+  current_year: number;
+  lifetime_contributions: number;
+  lifetime_withdrawals: number;
+  cumulative_room: number;
+  withdrawal_room: number;
+  total_room: number;
+  remaining_room: number;
+  pct_used: number;
+}
+
 export interface Account {
   id: number;
   brokerage: string;

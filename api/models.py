@@ -100,6 +100,20 @@ class AccountsResponse(BaseModel):
     accounts: list[Account]
 
 
+class TfsaSummary(BaseModel):
+    birth_year: int
+    year_turned_18: int
+    first_contribution_year: int
+    current_year: int
+    lifetime_contributions: float
+    lifetime_withdrawals: float
+    cumulative_room: float
+    withdrawal_room: float
+    total_room: float
+    remaining_room: float
+    pct_used: float
+
+
 class SecurityDetail(BaseModel):
     """Full company/security info shown in the expanded company card."""
 

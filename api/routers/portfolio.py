@@ -19,11 +19,13 @@ from api.models import (
     SecurityDetail,
     SecurityHistory,
     SecurityHistoryPoint,
+    TfsaSummary,
 )
 from api.services import fx as fx_service
 from api.services import returns as returns_service
 from api.services import valuation as valuation_service
 from api.services import security_info
+from api.services import tfsa as tfsa_service
 
 router = APIRouter()
 
@@ -328,6 +330,25 @@ def get_security_history(
         period=data["period"],
         series=[SecurityHistoryPoint(**p) for p in data["series"]],
     )
+
+
+@router.get("/tfsa", response_model=TfsaSummary)
+def get_tfsa_summary(
+    birth_year: int = Query(2005, ge=1900, le=2100),
+    accounts: str = Query(None),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """TFSA lifetime contributions and remaining room.
+
+    When the frontend filters to TFSA account(s), pass the selected account
+    IDs to compute room only for those accounts.
+    """
+    try:
+        account_ids = parse_account_ids(accounts)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    data = tfsa_service.tfsa_summary(conn, birth_year=birth_year, account_ids=account_ids)
+    return TfsaSummary(**data)
 
 
 @router.get("/status")

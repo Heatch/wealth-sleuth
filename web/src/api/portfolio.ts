@@ -10,6 +10,7 @@ import type {
   SecurityDetail,
   SecurityHistory,
   SortOrder,
+  TfsaSummary,
 } from "../lib/types";
 
 async function get<T>(path: string): Promise<T> {
@@ -95,4 +96,15 @@ export function fetchSecurityHistory(
   return get<SecurityHistory>(
     `/api/securities/${encodeURIComponent(symbol)}/history?period=${period}`,
   );
+}
+
+export function fetchTfsaSummary(
+  birthYear: number,
+  accounts?: number[] | null,
+): Promise<TfsaSummary> {
+  let url = `/api/tfsa?birth_year=${birthYear}`;
+  if (accounts && accounts.length) {
+    url += `&accounts=${accounts.join(",")}`;
+  }
+  return get<TfsaSummary>(url);
 }
