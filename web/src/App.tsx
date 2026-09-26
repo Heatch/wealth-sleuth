@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
 import { fetchAccounts, fetchHoldings, fetchHistory, fetchSummary, fetchStatus } from "./api/portfolio";
 import type { AllocationFilter, Currency, HoldingSort, Period, ReturnMethod, SortOrder } from "./lib/types";
+import { matchesAllocationFilters } from "./lib/allocation";
 import AccountTypeFilter from "./components/AccountTypeFilter";
 import AllocationSection from "./components/AllocationSection";
 import BrokerageFilter from "./components/BrokerageFilter";
@@ -19,7 +20,7 @@ export default function App() {
   const [sort, setSort] = useState<HoldingSort>("value");
   const [order, setOrder] = useState<SortOrder>("desc");
   const [zoom, setZoom] = useState<ZoomRange | null>(null);
-  const [allocationFilter, setAllocationFilter] = useState<AllocationFilter | null>(null);
+  const [allocationFilters, setAllocationFilters] = useState<AllocationFilter[]>([]);
   const [holdingsOpen, setHoldingsOpen] = useState(true);
   const [allocationOpen, setAllocationOpen] = useState(true);
   const [selectedBrokerages, setSelectedBrokerages] = useState<string[] | null>(() => {
@@ -94,9 +95,9 @@ export default function App() {
 
   const filteredHoldings = useMemo(() => {
     const all = holdingsQ.data?.holdings ?? [];
-    if (!allocationFilter) return all;
-    return all.filter((h) => (h[allocationFilter.dimension] ?? "Unknown") === allocationFilter.value);
-  }, [holdingsQ.data, allocationFilter]);
+    if (!allocationFilters.length) return all;
+    return all.filter((h) => matchesAllocationFilters(h, allocationFilters));
+  }, [holdingsQ.data, allocationFilters]);
 
   const filteredTotals = useMemo(() => {
     if (!filteredHoldings.length) return undefined;
@@ -111,9 +112,9 @@ export default function App() {
   }, [filteredHoldings]);
 
   const sliceSymbols = useMemo(() => {
-    if (!allocationFilter || !filteredHoldings.length) return undefined;
+    if (!allocationFilters.length || !filteredHoldings.length) return undefined;
     return Array.from(new Set(filteredHoldings.map((h) => h.symbol)));
-  }, [allocationFilter, filteredHoldings]);
+  }, [allocationFilters, filteredHoldings]);
 
   const summaryQ = useQuery({
     queryKey: ["summary", currency, selectedAccounts, sliceSymbols],
@@ -148,20 +149,20 @@ export default function App() {
   const handleCurrency = (c: Currency) => {
     setCurrency(c);
     setZoom(null);
-    setAllocationFilter(null);
+    setAllocationFilters([]);
   };
   const handleBrokerages = (ids: string[] | null) => {
     setSelectedBrokerages(ids);
     setZoom(null);
-    setAllocationFilter(null);
+    setAllocationFilters([]);
   };
   const handleTypes = (ids: string[] | null) => {
     setSelectedTypes(ids);
     setZoom(null);
-    setAllocationFilter(null);
+    setAllocationFilters([]);
   };
-  const handleAllocationFilter = (f: AllocationFilter | null) => {
-    setAllocationFilter(f);
+  const handleAllocationFilters = (filters: AllocationFilter[]) => {
+    setAllocationFilters(filters);
     setZoom(null);
   };
 
@@ -204,11 +205,11 @@ export default function App() {
         <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>
           Select accounts above to view portfolio data.
         </div>
-      ) : allocationFilter && filteredHoldings.length === 0 ? (
+      ) : allocationFilters.length > 0 && filteredHoldings.length === 0 ? (
         <div className="py-12 text-sm" style={{ color: "var(--ink-soft)" }}>
-          No holdings match the selected allocation filter.
+          No holdings match the selected allocation filters.
           <button
-            onClick={() => setAllocationFilter(null)}
+            onClick={() => setAllocationFilters([])}
             className="ml-3 rounded px-2 py-0.5 text-xs"
             style={{ background: "color-mix(in srgb, var(--gold) 18%, transparent)", color: "var(--ink)" }}
           >
@@ -242,8 +243,8 @@ export default function App() {
         <CollapsibleSection title="Allocation" open={allocationOpen} onToggle={() => setAllocationOpen((o) => !o)}>
           <AllocationSection
             holdings={holdingsQ.data?.holdings}
-            filter={allocationFilter}
-            onFilter={handleAllocationFilter}
+            filters={allocationFilters}
+            onFilters={handleAllocationFilters}
           />
         </CollapsibleSection>
       )}

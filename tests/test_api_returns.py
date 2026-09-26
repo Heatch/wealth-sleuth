@@ -141,6 +141,53 @@ class ApiReturnTests(unittest.TestCase):
             hist["series"][-1]["return_twr"], returns["y1"]["twr"], places=6
         )
 
+    def test_stacked_account_and_symbol_filters(self):
+        """Brokerage/account filters and symbol filters can be combined."""
+        holdings = self.client.get("/api/holdings?currency=CAD").json()["holdings"]
+        accounts = self.client.get("/api/accounts").json()["accounts"]
+        if not holdings or not accounts:
+            self.skipTest("No data")
+
+        # Pick a country slice and a Disnat account subset.
+        countries = {}
+        for h in holdings:
+            c = h.get("country") or "Unknown"
+            countries[c] = countries.get(c, 0.0) + (h["current_value"] or 0.0)
+        country = max(countries, key=countries.get)
+        country_symbols = list({h["symbol"] for h in holdings if (h.get("country") or "Unknown") == country})
+
+        disnat_ids = [a["id"] for a in accounts if a["brokerage"].lower() == "disnat"]
+        if not disnat_ids:
+            self.skipTest("No Disnat accounts")
+
+        params = {
+            "currency": "CAD",
+            "accounts": ",".join(str(i) for i in disnat_ids),
+            "symbols": ",".join(country_symbols),
+        }
+        summary = self.client.get("/api/portfolio/summary", params=params).json()
+        self.assertEqual(summary["currency"], "CAD")
+        self.assertIn("returns", summary)
+
+        hist = self.client.get("/api/portfolio/history?period=all&currency=CAD&accounts={}&symbols={}".format(
+            ",".join(str(i) for i in disnat_ids),
+            ",".join(country_symbols),
+        )).json()
+        self.assertTrue(len(hist["series"]) > 0)
+        # Schema is present even when the overlap is empty.
+        self.assertIn("return_twr", hist["series"][-1])
+        self.assertIn("return_xirr", hist["series"][-1])
+
+    def test_multiple_symbols_value_matches_holdings(self):
+        """Selecting several securities at once values only those securities."""
+        holdings = self.client.get("/api/holdings?currency=CAD").json()["holdings"]
+        if len(holdings) < 2:
+            self.skipTest("Need at least two holdings")
+        symbols = [holdings[0]["symbol"], holdings[1]["symbol"]]
+        expected = sum(h["current_value"] or 0.0 for h in holdings if h["symbol"] in symbols)
+        summary = self.client.get(f"/api/portfolio/summary?currency=CAD&symbols={','.join(symbols)}").json()
+        self.assertAlmostEqual(summary["total_value"], expected, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()
