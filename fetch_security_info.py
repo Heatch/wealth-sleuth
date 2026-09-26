@@ -2,12 +2,17 @@
 Fetch security info from yfinance and update the securities table.
 
 Resolves each security to a Yahoo Finance ticker, fetches fundamentals
-(price, market cap, sector, industry, P/E, dividends, 52-week range),
+(price, market cap, sector, industry, country, P/E, dividends, 52-week range),
 and writes them to portfolio.db.
+
+For CDRs, if the NEO listing is missing sector/industry/country, the script
+falls back to the underlying company ticker. For ETFs it applies keyword-based
+classifications (e.g. gold/uranium -> Basic Materials) and infers a domicile /
+holdings country.
 
 Ticker resolution (no lookup table, rule-based):
 - USD securities: plain ticker (ACHR, GLD, TBIL)
-- CDRs: {symbol}.NE first (actual CDR), then {symbol}.TO
+- CDRs: {symbol}.NE first (actual CDR), then the underlying {symbol}
 - CAD stocks/ETFs: {symbol}.TO, then .V, then .CN, then plain
 
 Usage:
@@ -18,6 +23,7 @@ Usage:
 """
 
 import argparse
+import re
 import time
 from datetime import date
 from pathlib import Path
@@ -27,14 +33,62 @@ from config import DB_PATH
 from database import get_connection, migrate_securities_schema
 
 
+# Country lookup by Yahoo Finance exchange code. Used as a fallback when
+# yfinance does not populate the `country` field (common for ETFs).
+EXCHANGE_COUNTRY_MAP = {
+    "TOR": "Canada",
+    "NEO": "Canada",
+    "V": "Canada",
+    "CN": "Canada",
+    "CNSX": "Canada",
+    "TSX": "Canada",
+    "NYQ": "United States",
+    "NMS": "United States",
+    "PCX": "United States",
+    "NGM": "United States",
+    "NYSE": "United States",
+    "NASDAQ": "United States",
+    "BATS": "United States",
+    "ARCA": "United States",
+    "LSE": "United Kingdom",
+    "LON": "United Kingdom",
+    "FRA": "Germany",
+    "GER": "Germany",
+    "HKG": "Hong Kong",
+    "JPX": "Japan",
+    "JAS": "Japan",
+    "ASX": "Australia",
+    "TSN": "Taiwan",
+    "TWO": "Taiwan",
+    "NSE": "India",
+    "BSE": "India",
+}
+
+
+# Keywords that signal a globally diversified international ETF.
+INTERNATIONAL_ETF_KEYWORDS = [
+    "GLOBAL",
+    "INTERNATIONAL",
+    "WORLD",
+    "EAFE",
+    "EMERGING",
+    "MSCI",
+    "ACWI",
+    "ALL COUNTRY",
+    "DEVELOPED",
+    "EX-US",
+    "EX US",
+    "FOREIGN",
+]
+
+
 def resolve_ticker(symbol: str, currency: str, is_cdr: int) -> list[str]:
     """Return candidate Yahoo Finance tickers in preference order."""
     if currency == "USD":
         return [symbol]
     if is_cdr:
-        # CDRs list on NEO (.NE gives the CDR itself; .TO falls back
-        # to the underlying company quote)
-        return [f"{symbol}.NE", f"{symbol}.TO"]
+        # CDRs list on NEO (.NE). The underlying company is the plain symbol.
+        return [f"{symbol}.NE", symbol]
     # CAD stocks/ETFs: TSX (.TO), Venture (.V), CSE (.CN), then plain
     return [f"{symbol}.TO", f"{symbol}.V", f"{symbol}.CN", symbol]
 
@@ -62,6 +116,82 @@ def fetch_info(ticker: str) -> Optional[dict]:
     return info
 
 
+def _combined_text(info: dict) -> str:
+    """Upper-case name + category for keyword matching."""
+    name = info.get("longName") or info.get("shortName") or ""
+    category = info.get("category") or ""
+    return f"{name} {category}".upper()
+
+
+def infer_etf_sector_industry(info: dict) -> tuple[Optional[str], Optional[str]]:
+    """Return (sector, industry) for an ETF based on its name/category."""
+    text = _combined_text(info)
+
+    if any(k in text for k in ["GOLD", "SILVER", "PRECIOUS METAL"]):
+        return "Basic Materials", "Precious Metals"
+    if any(k in text for k in ["URANIUM", "NUCLEAR"]):
+        return "Basic Materials", "Uranium"
+    if any(k in text for k in ["COMMODITY", "NATURAL RESOURCES"]):
+        return "Basic Materials", None
+    if any(k in text for k in ["BOND", "T-BILL", "TREASURY", "FIXED INCOME", "SAVINGS", "HIGH INTEREST", "MONEY MARKET", "ULTRASHORT"]):
+        return "Fixed Income", None
+    if any(k in text for k in ["CURRENCY", "DOLLAR", "FOREX"]):
+        return "Currency", "Currency"
+    if any(k in text for k in ["REAL ESTATE", " REIT"]):
+        return "Real Estate", "Real Estate"
+    if any(k in text for k in ["ENERGY", "OIL", "GAS"]):
+        return "Energy", "Energy"
+    if any(k in text for k in ["UTILITIES"]):
+        return "Utilities", "Utilities"
+    if any(k in text for k in ["INFRASTRUCTURE"]):
+        return "Industrials", "Infrastructure"
+    if any(k in text for k in ["TECHNOLOGY", "TECH ", "SEMICONDUCTOR"]):
+        return "Technology", "Technology"
+    if any(k in text for k in ["FINANCIAL", "BANK"]):
+        return "Financial Services", "Financials"
+    if any(k in text for k in ["HEALTH CARE", "HEALTHCARE", "BIOTECH", "PHARMA"]):
+        return "Healthcare", "Healthcare"
+    if any(k in text for k in ["INDEX", "NASDAQ", "S&P", "DOW", "RUSSELL", "EQUITY", "STOCK", "SOCIAL"]):
+        return "Equities", None
+
+    # Fall back to the ETF category as a sector if no specific keyword matched.
+    category = info.get("category")
+    if category:
+        return category, None
+    return None, None
+
+
+def infer_etf_country(info: dict) -> Optional[str]:
+    """Infer a country for an ETF from its name/exchange."""
+    name = (info.get("longName") or info.get("shortName") or "").upper()
+    exchange = (info.get("exchange") or "").upper()
+
+    # "Global X" is a Canadian fund family, not an international mandate.
+    name_clean = re.sub(r"\bGLOBAL\s*X\b", "", name).strip()
+    if any(k in name_clean for k in INTERNATIONAL_ETF_KEYWORDS):
+        return "International"
+
+    if any(k in name_clean for k in ["CANADIAN", "CANADA", "S&P/TSX", "TSX"]):
+        return "Canada"
+    if any(k in name_clean for k in ["U.S.", "US ", "USA", "NASDAQ", "S&P 500", "RUSSELL", "DOW"]):
+        return "United States"
+    if any(k in name_clean for k in ["EUROPE", "EURO", "EUROZONE"]):
+        return "Europe"
+    if any(k in name_clean for k in ["CHINA", "CHINESE"]):
+        return "China"
+
+    return EXCHANGE_COUNTRY_MAP.get(exchange)
+
+
+def infer_country(info: dict) -> Optional[str]:
+    """Best-effort country from yfinance info, falling back to exchange map."""
+    country = info.get("country")
+    if country:
+        return country
+    exchange = (info.get("exchange") or "").upper()
+    return EXCHANGE_COUNTRY_MAP.get(exchange)
+
+
 def update_securities(
     db_path: Optional[Path] = None,
     delay: float = 0.25,
@@ -79,12 +209,12 @@ def update_securities(
     try:
         if force:
             rows = conn.execute(
-                "SELECT id, symbol, currency, is_cdr FROM securities "
+                "SELECT id, symbol, currency, is_cdr, asset_class FROM securities "
                 "WHERE is_cash = 0 OR is_cash IS NULL"
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, symbol, currency, is_cdr FROM securities "
+                "SELECT id, symbol, currency, is_cdr, asset_class FROM securities "
                 "WHERE (is_cash = 0 OR is_cash IS NULL) AND last_price IS NULL"
             ).fetchall()
 
@@ -109,6 +239,27 @@ def update_securities(
                 time.sleep(delay)
                 continue
 
+            # For CDRs, fill missing sector/industry/country from the underlying company.
+            if row["is_cdr"]:
+                missing = not (info.get("sector") and info.get("industry") and info.get("country"))
+                if missing:
+                    underlying = fetch_info(row["symbol"])
+                    if underlying:
+                        for key in ("sector", "industry", "country"):
+                            if not info.get(key):
+                                info[key] = underlying.get(key)
+
+            # For ETFs, derive sector/industry/country when yfinance leaves them blank.
+            if row["asset_class"] == "etf":
+                if not info.get("sector"):
+                    sector, industry = infer_etf_sector_industry(info)
+                    if sector:
+                        info["sector"] = sector
+                    if industry:
+                        info["industry"] = industry
+                if not info.get("country"):
+                    info["country"] = infer_etf_country(info)
+
             name = pick_name(info, row["is_cdr"])
             price = info.get("regularMarketPrice") or info.get("currentPrice")
             values = {
@@ -117,6 +268,7 @@ def update_securities(
                 "market_cap": info.get("marketCap"),
                 "sector": info.get("sector"),
                 "industry": info.get("industry"),
+                "country": infer_country(info),
                 "description": name,
                 "trailing_pe": info.get("trailingPE"),
                 "forward_pe": info.get("forwardPE"),
@@ -127,8 +279,9 @@ def update_securities(
             }
 
             sector = values["sector"] or "n/a"
+            country = values["country"] or "n/a"
             if dry_run:
-                print(f"  {row['symbol']:8} -> {used_ticker:12} {str(name)[:35]:35} price={price} (dry run)")
+                print(f"  {row['symbol']:8} -> {used_ticker:12} {str(name)[:35]:35} price={price} sector={sector} country={country} (dry run)")
             else:
                 conn.execute(
                     """
@@ -138,6 +291,7 @@ def update_securities(
                         market_cap = ?,
                         sector = ?,
                         industry = ?,
+                        country = ?,
                         description = ?,
                         trailing_pe = ?,
                         forward_pe = ?,
@@ -153,6 +307,7 @@ def update_securities(
                         values["market_cap"],
                         values["sector"],
                         values["industry"],
+                        values["country"],
                         values["description"],
                         values["trailing_pe"],
                         values["forward_pe"],
@@ -163,7 +318,7 @@ def update_securities(
                         row["id"],
                     ),
                 )
-                print(f"  {row['symbol']:8} -> {used_ticker:12} {str(name)[:35]:35} price={price} sector={sector}")
+                print(f"  {row['symbol']:8} -> {used_ticker:12} {str(name)[:35]:35} price={price} sector={sector} country={country}")
             updated += 1
             time.sleep(delay)
 

@@ -3,8 +3,13 @@
 export type Currency = "CAD" | "USD";
 export type Period = "1m" | "6m" | "ytd" | "1y" | "3y" | "all";
 export type ReturnMethod = "twr" | "xirr";
-export type HoldingSort = "value" | "gain" | "gain_pct" | "book_cost" | "symbol" | "weight" | "name" | "shares";
+export type HoldingSort = "value" | "gain" | "gain_pct" | "book_cost" | "symbol" | "weight" | "name" | "shares" | "country" | "sector" | "industry";
 export type SortOrder = "asc" | "desc";
+export type AllocationDimension = "sector" | "country";
+export interface AllocationFilter {
+  dimension: AllocationDimension;
+  value: string;
+}
 
 export interface PeriodReturns {
   twr: number | null;
@@ -43,6 +48,9 @@ export interface Holding {
   brokerage: string;
   account_type: string;
   asset_class: string | null;
+  sector: string | null;
+  industry: string | null;
+  country: string | null;
   currency: string;
   quantity: number;
   avg_cost: number;

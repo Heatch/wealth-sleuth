@@ -61,15 +61,22 @@ def load_securities(conn):
     return secs
 
 
-def load_transactions(conn, account_ids=None):
+def load_transactions(conn, account_ids=None, security_ids=None):
     """All transactions ordered by date (undated first), optionally filtered."""
     q = "SELECT date, type, quantity, net_amount, currency, security_id, account_id "
     q += "FROM transactions"
+    conditions = []
     params: list = []
     if account_ids:
         placeholders = ",".join("?" * len(account_ids))
-        q += f" WHERE account_id IN ({placeholders})"
-        params = list(account_ids)
+        conditions.append(f"account_id IN ({placeholders})")
+        params.extend(account_ids)
+    if security_ids:
+        placeholders = ",".join("?" * len(security_ids))
+        conditions.append(f"security_id IN ({placeholders})")
+        params.extend(security_ids)
+    if conditions:
+        q += " WHERE " + " AND ".join(conditions)
     q += " ORDER BY date, id"
     return conn.execute(q, params).fetchall()
 
@@ -171,15 +178,20 @@ def fx_rate_on_index(fx_dates, fx_rates, d):
     return fx_rates[i]
 
 
-def daily_portfolio_values(conn, currency="CAD", account_ids=None):
+def daily_portfolio_values(conn, currency="CAD", account_ids=None, security_ids=None):
     """Daily (date, value) series plus per-date external cash flows.
 
     When account_ids is given, only those accounts are included.
+    When security_ids is given, only those securities are valued (used for
+    allocation-slice views); cash and flows are limited to transactions
+    involving those securities.
     """
     currency = (currency or "CAD").upper()
+    if security_ids is not None and len(security_ids) == 0:
+        return [], {}, 0.0, 0.0, 0.0, {}
     price_map = load_price_map(conn)
     secs = load_securities(conn)
-    txns = load_transactions(conn, account_ids)
+    txns = load_transactions(conn, account_ids, security_ids)
     fx_dates, fx_rates = load_fx_index(conn)
     by_date = defaultdict(list)
     undated = []
@@ -257,12 +269,13 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None):
         flows[d] = day_flow
         deposits[d] = day_dep
         total = value_positions(positions, secs, price_map, price_index, d, currency, fx_rate)
-        total += value_cash(cash, currency, fx_rate)
+        if security_ids is None:
+            total += value_cash(cash, currency, fx_rate)
         series.append((d, total))
 
     # Final cash balance in display currency (for the cash totals line)
     last_fx = fx_rate_on_index(fx_dates, fx_rates, last) if all_dates else 1.0
-    cash_total = value_cash(cash, currency, last_fx)
+    cash_total = value_cash(cash, currency, last_fx) if security_ids is None else 0.0
     # Undated baseline converted at the first series date's FX rate.
     # Kept OUT of `flows` so TWR/MWR math is untouched.
     first_fx = fx_rate_on_index(fx_dates, fx_rates, first) if all_dates else 1.0
@@ -277,25 +290,28 @@ def daily_portfolio_values(conn, currency="CAD", account_ids=None):
     return series, flows, cash_total, undated_base, undated_dep_base, deposits
 
 
-def daily_portfolio_values_cached(currency="CAD", account_ids=None):
+def daily_portfolio_values_cached(currency="CAD", account_ids=None, security_ids=None):
     """TTL-cached wrapper around daily_portfolio_values.
 
     The underlying data changes at most once per day (batch scripts),
     so a 5-minute TTL eliminates duplicate computation between the
     summary and history endpoints on page load. The cache key includes
-    the sorted account filter so each combination is cached separately.
+    the sorted account and security filters so each combination is cached
+    separately.
     """
     from api.cache import cache
 
     acct_key = tuple(sorted(account_ids)) if account_ids else "all"
-    key = f"valuation_{currency}_{acct_key}"
+    sec_key = tuple(sorted(security_ids)) if security_ids else "all"
+    # v2 bump: segment views now exclude cash and hide returns.
+    key = f"valuation_v2_{currency}_{acct_key}_{sec_key}"
     cached = cache.get(key)
     if cached is not None:
         return cached
     from database import get_connection
     conn = get_connection()
     try:
-        result = daily_portfolio_values(conn, currency, account_ids)
+        result = daily_portfolio_values(conn, currency, account_ids, security_ids)
     finally:
         conn.close()
     cache.set(key, result)

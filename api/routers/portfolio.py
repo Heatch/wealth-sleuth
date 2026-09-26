@@ -1,10 +1,11 @@
 """Portfolio API router: summary, history, holdings."""
 
 import sqlite3
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.deps import get_db, parse_account_ids, validate_currency, validate_period
+from api.deps import get_db, parse_account_ids, parse_symbols, validate_currency, validate_period
 from api.models import AccountsResponse, Account, HoldingsResponse, Holding, HoldingsTotals, PortfolioHistory, HistoryPoint, PortfolioSummary, PeriodReturns
 from api.services import fx as fx_service
 from api.services import returns as returns_service
@@ -19,6 +20,18 @@ def _period_key(period: str) -> str:
 
 def _to_period_returns(d: dict) -> PeriodReturns:
     return PeriodReturns(twr=d.get("twr"), xirr=d.get("xirr"))
+
+
+def _resolve_security_ids(conn: sqlite3.Connection, symbols: Optional[list[str]]) -> Optional[list[int]]:
+    """Map canonical symbols to internal security IDs."""
+    if not symbols:
+        return None
+    placeholders = ",".join("?" * len(symbols))
+    rows = conn.execute(
+        f"SELECT id FROM securities WHERE UPPER(symbol) IN ({placeholders})",
+        symbols,
+    ).fetchall()
+    return [r["id"] for r in rows]
 
 
 @router.get("/accounts", response_model=AccountsResponse)
@@ -54,15 +67,21 @@ def get_accounts(
 def get_summary(
     currency: str = Query("CAD"),
     accounts: str = Query(None),
+    symbols: str = Query(None),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Current value, daily change, and returns for every period."""
     try:
         cur = validate_currency(currency)
         account_ids = parse_account_ids(accounts)
+        symbol_list = parse_symbols(symbols)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    series, _flows, cash_total, _undated, _undated_dep, _deposits = valuation_service.daily_portfolio_values_cached(cur, account_ids)
+
+    security_ids = _resolve_security_ids(conn, symbol_list)
+    series, _flows, cash_total, _undated, _undated_dep, _deposits = valuation_service.daily_portfolio_values_cached(
+        cur, account_ids, security_ids
+    )
     if not series:
         raise HTTPException(status_code=404, detail="No portfolio data")
     end_value = series[-1][1]
@@ -70,9 +89,14 @@ def get_summary(
     change = end_value - prev_value
     change_pct = (change / abs(prev_value)) if prev_value else None
     fx_rate, as_of = fx_service.get_latest_fx_rate(conn)
-    returns_result = returns_service.portfolio_returns_cached(cur, account_ids)
+    returns_result = returns_service.portfolio_returns_cached(cur, account_ids, security_ids)
     raw = returns_result["periods"]
-    mapped = {_period_key(k): _to_period_returns(v) for k, v in raw.items()}
+    if security_ids:
+        # Segment-level returns are not meaningful because the filtered
+        # sub-portfolio can drop to zero when all slice holdings are sold.
+        mapped = {_period_key(k): PeriodReturns(twr=None, xirr=None) for k in raw}
+    else:
+        mapped = {_period_key(k): _to_period_returns(v) for k, v in raw.items()}
     return PortfolioSummary(
         total_value=end_value,
         total_change_today=change,
@@ -81,7 +105,7 @@ def get_summary(
         fx_rate=fx_rate,
         currency=cur,
         returns=mapped,
-        cash_total=cash_total,
+        cash_total=None if security_ids else cash_total,
     )
 
 
@@ -90,6 +114,7 @@ def get_history(
     period: str = Query("1y"),
     currency: str = Query("CAD"),
     accounts: str = Query(None),
+    symbols: str = Query(None),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Time series of portfolio value for the chart."""
@@ -97,22 +122,36 @@ def get_history(
         per = validate_period(period)
         cur = validate_currency(currency)
         account_ids = parse_account_ids(accounts)
+        symbol_list = parse_symbols(symbols)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    returns_result = returns_service.portfolio_returns_cached(cur, account_ids)
+    security_ids = _resolve_security_ids(conn, symbol_list)
+    returns_result = returns_service.portfolio_returns_cached(cur, account_ids, security_ids)
     points_data = returns_result["history"].get(per, [])
     if not points_data:
         raise HTTPException(status_code=404, detail="No portfolio data")
-    points = [
-        HistoryPoint(
-            date=p["date"],
-            value=p["value"],
-            net_deposits=p["net_deposits"],
-            return_xirr=p["return_xirr"],
-            return_twr=p["return_twr"],
-        )
-        for p in points_data
-    ]
+    if security_ids:
+        points = [
+            HistoryPoint(
+                date=p["date"],
+                value=p["value"],
+                net_deposits=p["net_deposits"],
+                return_xirr=None,
+                return_twr=None,
+            )
+            for p in points_data
+        ]
+    else:
+        points = [
+            HistoryPoint(
+                date=p["date"],
+                value=p["value"],
+                net_deposits=p["net_deposits"],
+                return_xirr=p["return_xirr"],
+                return_twr=p["return_twr"],
+            )
+            for p in points_data
+        ]
     return PortfolioHistory(
         series=points,
         period_start_value=points[0].value if points else None,
@@ -135,7 +174,7 @@ def get_holdings(
         account_ids = parse_account_ids(accounts)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if sort not in ("value", "gain", "gain_pct", "book_cost", "symbol", "weight", "name", "shares"):
+    if sort not in ("value", "gain", "gain_pct", "book_cost", "symbol", "weight", "name", "shares", "country", "sector", "industry"):
         raise HTTPException(status_code=400, detail="Invalid sort field")
     if order not in ("asc", "desc"):
         raise HTTPException(status_code=400, detail="Invalid order")
@@ -144,7 +183,8 @@ def get_holdings(
     fx_rate, _ = fx_service.get_latest_fx_rate(conn)
     query = (
         "SELECT h.quantity, h.avg_cost, h.total_cost_basis, "
-        "s.symbol, COALESCE(s.description, s.name) AS name, s.currency, s.asset_class, s.last_price, "
+        "s.symbol, COALESCE(s.description, s.name) AS name, s.currency, s.asset_class, "
+        "s.sector, s.industry, s.country, s.last_price, "
         "b.name AS brokerage, a.account_type "
         "FROM holdings h "
         "JOIN accounts a ON h.account_id = a.id "
@@ -176,6 +216,9 @@ def get_holdings(
             brokerage=r["brokerage"],
             account_type=r["account_type"],
             asset_class=r["asset_class"],
+            sector=r["sector"],
+            industry=r["industry"],
+            country=r["country"],
             currency=r["currency"],
             quantity=qty,
             avg_cost=avg,
@@ -203,6 +246,9 @@ def get_holdings(
         "weight": lambda h: (h.weight is None, h.weight or 0),
         "name": lambda h: (h.name or "").lower(),
         "shares": lambda h: h.quantity,
+        "country": lambda h: (h.country is None, h.country or ""),
+        "sector": lambda h: (h.sector is None, h.sector or ""),
+        "industry": lambda h: (h.industry is None, h.industry or ""),
     }
     holdings.sort(key=key_map[sort], reverse=reverse)
 
