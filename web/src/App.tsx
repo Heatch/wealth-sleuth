@@ -1,8 +1,14 @@
 ﻿import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
-import { fetchAccounts, fetchHoldings, fetchHistory, fetchSummary, fetchStatus } from "./api/portfolio";
-import type { AllocationFilter, Currency, HoldingSort, Period, ReturnMethod, SortOrder } from "./lib/types";
+import {
+  fetchAccounts,
+  fetchHoldings,
+  fetchHistory,
+  fetchSummary,
+  fetchStatus,
+} from "./api/portfolio";
+import type { AllocationFilter, Currency, Holding, HoldingSort, Period, ReturnMethod, SortOrder } from "./lib/types";
 import AccountTypeFilter from "./components/AccountTypeFilter";
 import AllocationSection from "./components/AllocationSection";
 import BrokerageFilter from "./components/BrokerageFilter";
@@ -22,6 +28,7 @@ export default function App() {
   const [allocationFilter, setAllocationFilter] = useState<AllocationFilter | null>(null);
   const [holdingsOpen, setHoldingsOpen] = useState(true);
   const [allocationOpen, setAllocationOpen] = useState(true);
+  const [openCards, setOpenCards] = useState<Record<string, Holding>>({});
   const [selectedBrokerages, setSelectedBrokerages] = useState<string[] | null>(() => {
     if (typeof window === "undefined") return null;
     try {
@@ -138,6 +145,29 @@ export default function App() {
     }
   };
 
+  const sameHolding = (a: Holding, b: Holding) =>
+    a.symbol === b.symbol && a.brokerage === b.brokerage && a.account_type === b.account_type;
+
+  const handleToggleCard = (h: Holding) => {
+    setOpenCards((prev) => {
+      const next = { ...prev };
+      if (next[h.symbol] && sameHolding(next[h.symbol], h)) {
+        delete next[h.symbol];
+      } else {
+        next[h.symbol] = h;
+      }
+      return next;
+    });
+  };
+
+  const handleCloseCard = (symbol: string) => {
+    setOpenCards((prev) => {
+      const next = { ...prev };
+      delete next[symbol];
+      return next;
+    });
+  };
+
   const error = summaryQ.error || historyQ.error || holdingsQ.error;
 
   // Reset chart zoom and allocation filter whenever the underlying dataset changes
@@ -149,20 +179,24 @@ export default function App() {
     setCurrency(c);
     setZoom(null);
     setAllocationFilter(null);
+    setOpenCards({});
   };
   const handleBrokerages = (ids: string[] | null) => {
     setSelectedBrokerages(ids);
     setZoom(null);
     setAllocationFilter(null);
+    setOpenCards({});
   };
   const handleTypes = (ids: string[] | null) => {
     setSelectedTypes(ids);
     setZoom(null);
     setAllocationFilter(null);
+    setOpenCards({});
   };
   const handleAllocationFilter = (f: AllocationFilter | null) => {
     setAllocationFilter(f);
     setZoom(null);
+    setOpenCards({});
   };
 
   const nothingSelected = selectedAccounts !== null && selectedAccounts.length === 0;
@@ -234,6 +268,10 @@ export default function App() {
               sort={sort}
               order={order}
               onSort={handleSort}
+              currency={currency}
+              openCards={openCards}
+              onToggleCard={handleToggleCard}
+              onCloseCard={handleCloseCard}
             />
           </CollapsibleSection>
         </>

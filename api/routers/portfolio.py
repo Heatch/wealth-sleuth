@@ -6,10 +6,24 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.deps import get_db, parse_account_ids, parse_symbols, validate_currency, validate_period
-from api.models import AccountsResponse, Account, HoldingsResponse, Holding, HoldingsTotals, PortfolioHistory, HistoryPoint, PortfolioSummary, PeriodReturns
+from api.models import (
+    AccountsResponse,
+    Account,
+    HoldingsResponse,
+    Holding,
+    HoldingsTotals,
+    PortfolioHistory,
+    HistoryPoint,
+    PortfolioSummary,
+    PeriodReturns,
+    SecurityDetail,
+    SecurityHistory,
+    SecurityHistoryPoint,
+)
 from api.services import fx as fx_service
 from api.services import returns as returns_service
 from api.services import valuation as valuation_service
+from api.services import security_info
 
 router = APIRouter()
 
@@ -174,7 +188,11 @@ def get_holdings(
         account_ids = parse_account_ids(accounts)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if sort not in ("value", "gain", "gain_pct", "book_cost", "symbol", "weight", "name", "shares", "country", "sector", "industry"):
+    if sort not in (
+        "value", "gain", "gain_pct", "book_cost", "symbol", "weight",
+        "name", "shares", "country", "sector", "industry", "last_price",
+        "market_cap", "trailing_pe", "dividend_yield",
+    ):
         raise HTTPException(status_code=400, detail="Invalid sort field")
     if order not in ("asc", "desc"):
         raise HTTPException(status_code=400, detail="Invalid order")
@@ -185,6 +203,7 @@ def get_holdings(
         "SELECT h.quantity, h.avg_cost, h.total_cost_basis, "
         "s.symbol, COALESCE(s.description, s.name) AS name, s.currency, s.asset_class, "
         "s.sector, s.industry, s.country, s.last_price, "
+        "s.market_cap, s.trailing_pe, s.dividend_yield, "
         "b.name AS brokerage, a.account_type "
         "FROM holdings h "
         "JOIN accounts a ON h.account_id = a.id "
@@ -225,6 +244,9 @@ def get_holdings(
             book_cost=book,
             current_price=price,
             current_value=value,
+            market_cap=r["market_cap"],
+            trailing_pe=r["trailing_pe"],
+            dividend_yield=r["dividend_yield"],
             gain=gain,
             gain_pct=gain_pct,
             weight=None,
@@ -249,6 +271,10 @@ def get_holdings(
         "country": lambda h: (h.country is None, h.country or ""),
         "sector": lambda h: (h.sector is None, h.sector or ""),
         "industry": lambda h: (h.industry is None, h.industry or ""),
+        "last_price": lambda h: (h.current_price is None, h.current_price or 0),
+        "market_cap": lambda h: (h.market_cap is None, h.market_cap or 0),
+        "trailing_pe": lambda h: (h.trailing_pe is None, h.trailing_pe or 0),
+        "dividend_yield": lambda h: (h.dividend_yield is None, h.dividend_yield or 0),
     }
     holdings.sort(key=key_map[sort], reverse=reverse)
 
@@ -262,6 +288,46 @@ def get_holdings(
         gain_pct=total_gain_pct,
     )
     return HoldingsResponse(holdings=holdings, totals=totals, currency=cur)
+
+
+@router.get("/securities/{symbol}", response_model=SecurityDetail)
+def get_security_detail(
+    symbol: str,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Full company info for the expanded company card."""
+    try:
+        data = security_info.get_security_detail(symbol)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not load security detail: {e}")
+    return SecurityDetail(**data)
+
+
+@router.get("/securities/{symbol}/history", response_model=SecurityHistory)
+def get_security_history(
+    symbol: str,
+    period: str = Query("1y"),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Historical closes for a single security chart."""
+    try:
+        per = validate_period(period)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        data = security_info.get_security_history(symbol, per)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not load security history: {e}")
+    return SecurityHistory(
+        symbol=data["symbol"],
+        currency=data["currency"],
+        period=data["period"],
+        series=[SecurityHistoryPoint(**p) for p in data["series"]],
+    )
 
 
 @router.get("/status")

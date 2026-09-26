@@ -3,7 +3,22 @@
 export type Currency = "CAD" | "USD";
 export type Period = "1m" | "6m" | "ytd" | "1y" | "3y" | "all";
 export type ReturnMethod = "twr" | "xirr";
-export type HoldingSort = "value" | "gain" | "gain_pct" | "book_cost" | "symbol" | "weight" | "name" | "shares" | "country" | "sector" | "industry";
+export type HoldingSort =
+  | "value"
+  | "gain"
+  | "gain_pct"
+  | "book_cost"
+  | "symbol"
+  | "weight"
+  | "name"
+  | "shares"
+  | "country"
+  | "sector"
+  | "industry"
+  | "last_price"
+  | "market_cap"
+  | "trailing_pe"
+  | "dividend_yield";
 export type SortOrder = "asc" | "desc";
 export type AllocationDimension = "sector" | "country";
 export interface AllocationFilter {
@@ -57,6 +72,9 @@ export interface Holding {
   book_cost: number;
   current_price: number | null;
   current_value: number | null;
+  market_cap: number | null;
+  trailing_pe: number | null;
+  dividend_yield: number | null;
   gain: number | null;
   gain_pct: number | null;
   weight: number | null;
@@ -75,6 +93,50 @@ export interface HoldingsResponse {
   holdings: Holding[];
   totals: HoldingsTotals;
   currency: string;
+}
+
+export interface SecurityDetail {
+  symbol: string;
+  name: string | null;
+  description: string | null;
+  currency: string;
+  asset_class: string | null;
+  sector: string | null;
+  industry: string | null;
+  country: string | null;
+  exchange: string | null;
+  last_price: number | null;
+  last_price_date: string | null;
+  market_cap: number | null;
+  trailing_pe: number | null;
+  forward_pe: number | null;
+  dividend_yield: number | null;
+  dividend_rate: number | null;
+  fifty_two_week_high: number | null;
+  fifty_two_week_low: number | null;
+  beta: number | null;
+  eps: number | null;
+  price_to_book: number | null;
+  price_to_sales: number | null;
+  profit_margin: number | null;
+  payout_ratio: number | null;
+  ex_dividend_date: string | null;
+  dividend_date: string | null;
+  average_volume: number | null;
+  volume: number | null;
+  source: string;
+}
+
+export interface SecurityHistoryPoint {
+  date: string;
+  close: number;
+}
+
+export interface SecurityHistory {
+  symbol: string;
+  currency: string | null;
+  period: string;
+  series: SecurityHistoryPoint[];
 }
 
 export interface Account {

@@ -262,6 +262,18 @@ def update_securities(
 
             name = pick_name(info, row["is_cdr"])
             price = info.get("regularMarketPrice") or info.get("currentPrice")
+            dividend_rate = info.get("dividendRate")
+            raw_yield = info.get("dividendYield")
+            # Yahoo's dividendYield field is inconsistent: sometimes it's a
+            # decimal fraction (0.02 = 2%) and sometimes the percentage value
+            # itself (0.99 = 0.99%). Derive from dividendRate/price when
+            # possible; otherwise treat values > 1 as percentages.
+            if dividend_rate and price:
+                dividend_yield = dividend_rate / price
+            elif raw_yield is not None and raw_yield > 1:
+                dividend_yield = raw_yield / 100.0
+            else:
+                dividend_yield = raw_yield
             values = {
                 "last_price": price,
                 "last_price_date": date.today().isoformat(),
@@ -272,8 +284,8 @@ def update_securities(
                 "description": name,
                 "trailing_pe": info.get("trailingPE"),
                 "forward_pe": info.get("forwardPE"),
-                "dividend_yield": info.get("dividendYield"),
-                "dividend_rate": info.get("dividendRate"),
+                "dividend_yield": dividend_yield,
+                "dividend_rate": dividend_rate,
                 "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
                 "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
             }

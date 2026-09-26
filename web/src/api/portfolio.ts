@@ -7,6 +7,8 @@ import type {
   Period,
   PortfolioHistory,
   PortfolioSummary,
+  SecurityDetail,
+  SecurityHistory,
   SortOrder,
 } from "../lib/types";
 
@@ -80,4 +82,17 @@ export interface StatusResponse {
 
 export function fetchStatus(): Promise<StatusResponse> {
   return get<StatusResponse>(`/api/status`);
+}
+
+export function fetchSecurityDetail(symbol: string): Promise<SecurityDetail> {
+  return get<SecurityDetail>(`/api/securities/${encodeURIComponent(symbol)}`);
+}
+
+export function fetchSecurityHistory(
+  symbol: string,
+  period: Period = "1y",
+): Promise<SecurityHistory> {
+  return get<SecurityHistory>(
+    `/api/securities/${encodeURIComponent(symbol)}/history?period=${period}`,
+  );
 }
