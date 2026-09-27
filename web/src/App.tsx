@@ -274,55 +274,55 @@ export default function App() {
     <div className="mx-auto max-w-7xl px-6 py-8">
       <div className="mb-6 flex items-center justify-between">
         <div className="flex flex-wrap items-center gap-3">
-          <BrokerageFilter
-            accounts={accountsQ.data?.accounts}
-            selected={selectedBrokerages}
-            onChange={handleBrokerages}
-            typeFilter={selectedTypes}
-          />
-          <AccountTypeFilter
-            accounts={accountsQ.data?.accounts}
-            selected={selectedTypes}
-            onChange={handleTypes}
-            brokerageFilter={selectedBrokerages}
-          />
-          <div className="flex items-center gap-2 rounded-full px-3 py-1 text-sm" style={{ background: "color-mix(in srgb, var(--ink) 6%, transparent)" }}>
-            <button
-              onClick={() => {
-                setBenchmarksEnabled((v) => !v);
-                if (!benchmarksEnabled && benchmarksQ.data?.benchmarks.length && selectedBenchmarks.length === 0) {
-                  setSelectedBenchmarks(benchmarksQ.data.benchmarks.map((b) => b.symbol));
-                }
-              }}
-              className="flex items-center gap-1.5"
-              style={{ color: benchmarksEnabled ? "var(--gold)" : "var(--ink-soft)", fontWeight: benchmarksEnabled ? 600 : 400 }}
-            >
-              <span style={{ fontSize: 16 }}>{benchmarksEnabled ? "⊖" : "⊕"}</span>
-              Benchmarks
-            </button>
-            {benchmarksEnabled && benchmarksQ.data?.benchmarks.map((b) => {
-              const active = selectedBenchmarks.includes(b.symbol);
-              return (
-                <label
-                  key={b.symbol}
-                  className="flex cursor-pointer items-center gap-1 text-xs"
-                  style={{ color: active ? "var(--ink)" : "var(--ink-soft)" }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={active}
-                    onChange={() => {
-                      setSelectedBenchmarks((prev) =>
-                        active ? prev.filter((s) => s !== b.symbol) : [...prev, b.symbol]
-                      );
-                    }}
-                    className="cursor-pointer"
-                  />
-                  {b.name}
-                </label>
-              );
-            })}
-          </div>
+        <BrokerageFilter
+          accounts={accountsQ.data?.accounts}
+          selected={selectedBrokerages}
+          onChange={handleBrokerages}
+          typeFilter={selectedTypes}
+        />
+        <AccountTypeFilter
+          accounts={accountsQ.data?.accounts}
+          selected={selectedTypes}
+          onChange={handleTypes}
+          brokerageFilter={selectedBrokerages}
+        />
+        <div className="flex items-center gap-2 rounded-full px-3 py-1 text-sm" style={{ background: "color-mix(in srgb, var(--ink) 6%, transparent)" }}>
+          <button
+            onClick={() => {
+              setBenchmarksEnabled((v) => !v);
+              if (!benchmarksEnabled && benchmarksQ.data?.benchmarks.length && selectedBenchmarks.length === 0) {
+                setSelectedBenchmarks(benchmarksQ.data.benchmarks.map((b) => b.symbol));
+              }
+            }}
+            className="flex items-center gap-1.5"
+            style={{ color: benchmarksEnabled ? "var(--gold)" : "var(--ink-soft)", fontWeight: benchmarksEnabled ? 600 : 400 }}
+          >
+            <span style={{ fontSize: 16 }}>{benchmarksEnabled ? "⊖" : "⊕"}</span>
+            Benchmarks
+          </button>
+          {benchmarksEnabled && benchmarksQ.data?.benchmarks.map((b) => {
+            const active = selectedBenchmarks.includes(b.symbol);
+            return (
+              <label
+                key={b.symbol}
+                className="flex cursor-pointer items-center gap-1 text-xs"
+                style={{ color: active ? "var(--ink)" : "var(--ink-soft)" }}
+              >
+                <input
+                  type="checkbox"
+                  checked={active}
+                  onChange={() => {
+                    setSelectedBenchmarks((prev) =>
+                      active ? prev.filter((s) => s !== b.symbol) : [...prev, b.symbol]
+                    );
+                  }}
+                  className="cursor-pointer"
+                />
+                {b.name}
+              </label>
+            );
+          })}
+        </div>
         </div>
         <button
           onClick={() => setDark(!dark)}
