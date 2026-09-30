@@ -252,11 +252,22 @@ def refresh_holdings(db_path: Optional[Path] = None) -> dict:
 
         conn.commit()
 
-        return {
+        result = {
             "cash_holdings": cash_count,
             "security_holdings": security_count,
             "total": cash_count + security_count,
         }
+
+        try:
+            from holdings_md import sync_holdings_md
+
+            md_result = sync_holdings_md(db_path)
+            result["holdings_md"] = md_result
+        except Exception as e:
+            # Never break the refresh if the markdown sync fails
+            # (e.g. in-memory test DBs with no holdings.md alongside).
+            print(f"Warning: holdings.md sync skipped: {e}")
+        return result
     finally:
         conn.close()
 

@@ -21,6 +21,7 @@ transaction documents/
 portfolio.json
 portfolio.db
 portfolio.html
+holdings.md
 
 # IDE
 .vscode/
