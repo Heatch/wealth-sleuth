@@ -64,6 +64,15 @@ async def lifespan(app: FastAPI):
 
     init_db(DB_PATH)
     migrate_securities_schema(DB_PATH)
+    # Label crypto-related securities (e.g. Purpose Solana ETF) that
+    # yfinance leaves without a sector; also runs on new imports.
+    try:
+        from fetch_security_info import backfill_crypto_sectors
+        labelled = backfill_crypto_sectors(DB_PATH)
+        if labelled:
+            print(f"Crypto sectors labelled: {labelled}")
+    except Exception as e:
+        print(f"Crypto sector backfill skipped: {e}")
     conn = get_connection()
     try:
         ensure_benchmark_securities(conn)

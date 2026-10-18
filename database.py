@@ -120,6 +120,13 @@ CREATE TABLE IF NOT EXISTS schema_metadata (
     version TEXT PRIMARY KEY,
     applied_at TEXT DEFAULT (datetime('now'))
 );
+
+-- Simple key/value state (e.g. last live-price refresh timestamp).
+-- Read by /api/status so the UI can refresh when prices change.
+CREATE TABLE IF NOT EXISTS app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 

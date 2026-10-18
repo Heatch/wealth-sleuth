@@ -111,6 +111,7 @@ export function fetchBenchmarkHistory(
 
 export interface StatusResponse {
   has_gaps: boolean;
+  last_price_update: string | null;
   gaps: {
     missing: number[];
     stale: Array<{ id: number; last_date: string }>;

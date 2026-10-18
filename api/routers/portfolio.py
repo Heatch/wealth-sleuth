@@ -422,6 +422,16 @@ def get_status(
     from api.services.price_gaps import detect_price_gaps, has_gaps
 
     gaps = detect_price_gaps(conn)
+    # Timestamp of the last live-price refresh; the UI watches it to know
+    # when to refetch the table/summary instead of polling constantly.
+    last_price_update = None
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_state WHERE key = 'last_price_update'"
+        ).fetchone()
+        last_price_update = row["value"] if row else None
+    except sqlite3.OperationalError:
+        last_price_update = None
     return {
         "gaps": {
             "missing": gaps["missing"],
@@ -430,6 +440,7 @@ def get_status(
             "today": gaps["today"],
         },
         "has_gaps": has_gaps(gaps),
+        "last_price_update": last_price_update,
     }
 
 

@@ -167,6 +167,20 @@ def _merge_yf_detail(base: dict, info: dict) -> dict:
     return out
 
 
+def _apply_crypto_sector(base: dict) -> None:
+    """Label crypto securities by name when yfinance gives no/wrong sector."""
+    try:
+        from fetch_security_info import CRYPTO_SECTOR, classify_crypto
+    except Exception:
+        return
+    crypto, strong = classify_crypto(
+        f"{base.get('name') or ''} {base.get('symbol') or ''}"
+    )
+    # Strong matches override a generic sector; weak matches fill a gap.
+    if crypto and (strong or not base.get("sector")):
+        base["sector"] = CRYPTO_SECTOR
+
+
 def get_security_detail(symbol: str, db_path=None) -> dict:
     """Return combined DB + yfinance data for a single security. Cached."""
     from api.cache import cache
@@ -237,6 +251,7 @@ def get_security_detail(symbol: str, db_path=None) -> dict:
     finally:
         conn.close()
 
+    _apply_crypto_sector(base)
     cache.set(key, base)
     return base
 

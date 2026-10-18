@@ -82,6 +82,72 @@ INTERNATIONAL_ETF_KEYWORDS = [
 ]
 
 
+# Crypto classification. yfinance routinely returns no sector for crypto
+# funds (e.g. Purpose Solana ETF -> sector null), so we classify from the
+# stored name instead. Securities that are unambiguously crypto also
+# override a generic yfinance sector (crypto funds often show up as
+# "Financial Services" / "Technology", which hides what they are).
+CRYPTO_SECTOR = "Cryptocurrency"
+
+# Unambiguous substrings: safe to match anywhere in the name.
+CRYPTO_SUBSTRING_KEYWORDS = [
+    "CRYPTO",
+    "BLOCKCHAIN",
+    "BITCOIN",
+    "ETHEREUM",
+    "SOLANA",
+    "LITECOIN",
+    "DOGECOIN",
+    "RIPPLE",
+    "DIGITAL ASSET",
+    "STABLECOIN",
+    "ALTCOIN",
+    "WEB3",
+    "DEFI",
+]
+
+# Short/ambiguous markers: only matched as whole words so tickers like
+# SOL/ETH/BTC do not fire inside words such as "consolidated" or "solar".
+CRYPTO_WORD_KEYWORDS = [
+    "BTC", "ETH", "ETHER", "SOL", "XRP", "LTC", "DOGE", "ADA", "DOT",
+    "AVAX", "NFT",
+]
+
+# Strong markers that may override an existing (generic) sector.
+# "GALAXY DIGITAL" is a known digital-assets company that yfinance files
+# under Financial Services.
+CRYPTO_STRONG_SUBSTRINGS = [
+    "CRYPTO",
+    "BLOCKCHAIN",
+    "BITCOIN",
+    "ETHEREUM",
+    "SOLANA",
+    "GALAXY DIGITAL",
+]
+CRYPTO_STRONG_WORDS = ["BTC", "ETH", "SOL"]
+
+
+def classify_crypto(text: str) -> tuple[bool, bool]:
+    """Classify text as crypto-related.
+
+    Returns (is_crypto, is_strong):
+    - is_crypto: any crypto keyword/word matched.
+    - is_strong: a strong marker matched, which may override a generic
+      yfinance sector.
+    """
+    upper = (text or "").upper()
+    words = set(re.findall(r"[A-Z0-9]+", upper))
+    strong = any(k in upper for k in CRYPTO_STRONG_SUBSTRINGS) or bool(
+        words & set(CRYPTO_STRONG_WORDS)
+    )
+    crypto = (
+        strong
+        or any(k in upper for k in CRYPTO_SUBSTRING_KEYWORDS)
+        or bool(words & set(CRYPTO_WORD_KEYWORDS))
+    )
+    return crypto, strong
+
+
 def resolve_ticker(symbol: str, currency: str, is_cdr: int) -> list[str]:
     """Return candidate Yahoo Finance tickers in preference order."""
     if currency == "USD":
@@ -136,6 +202,10 @@ def _combined_text(info: dict) -> str:
 def infer_etf_sector_industry(info: dict) -> tuple[Optional[str], Optional[str]]:
     """Return (sector, industry) for an ETF based on its name/category."""
     text = _combined_text(info)
+
+    crypto, _strong = classify_crypto(text)
+    if crypto:
+        return CRYPTO_SECTOR, None
 
     if any(k in text for k in ["GOLD", "SILVER", "PRECIOUS METAL"]):
         return "Basic Materials", "Precious Metals"
@@ -202,6 +272,105 @@ def infer_country(info: dict) -> Optional[str]:
     return EXCHANGE_COUNTRY_MAP.get(exchange)
 
 
+def build_values_from_info(
+    info: dict, is_cdr: int, asset_class: Optional[str]
+) -> dict:
+    """Map a yfinance info dict to securities column values.
+
+    Shared by update_securities() and the live-price loop so the holdings
+    table (DB-backed) and the company card (on-demand enrichment) agree.
+    """
+    name = pick_name(info, is_cdr)
+    price = info.get("regularMarketPrice") or info.get("currentPrice")
+    dividend_rate = info.get("dividendRate")
+    raw_yield = info.get("dividendYield")
+    # Yahoo's dividendYield field is inconsistent: sometimes a decimal
+    # fraction (0.02 = 2%) and sometimes the percentage value itself
+    # (0.99 = 0.99%). Derive from dividendRate/price when possible;
+    # otherwise treat values > 1 as percentages.
+    if dividend_rate and price:
+        dividend_yield = dividend_rate / price
+    elif raw_yield is not None and raw_yield > 1:
+        dividend_yield = raw_yield / 100.0
+    else:
+        dividend_yield = raw_yield
+
+    sector = info.get("sector")
+    industry = info.get("industry")
+    country = infer_country(info)
+
+    # For ETFs, derive sector/industry/country when yfinance leaves them blank.
+    if asset_class == "etf":
+        if not sector:
+            inferred_sector, inferred_industry = infer_etf_sector_industry(info)
+            if inferred_sector:
+                sector = inferred_sector
+            if inferred_industry and not industry:
+                industry = inferred_industry
+        if not country:
+            country = infer_etf_country(info)
+
+    # Crypto classification from the name (works even when yfinance returns
+    # nothing, as for crypto funds). Strong matches override a generic sector.
+    crypto, strong = classify_crypto(f"{name or ''} {info.get('category') or ''}")
+    if crypto and (strong or not sector):
+        sector = CRYPTO_SECTOR
+
+    return {
+        "last_price": price,
+        "last_price_date": date.today().isoformat(),
+        "market_cap": info.get("marketCap"),
+        "sector": sector,
+        "industry": industry,
+        "country": country,
+        "description": name,
+        "trailing_pe": info.get("trailingPE"),
+        "forward_pe": info.get("forwardPE"),
+        "dividend_yield": dividend_yield,
+        "dividend_rate": dividend_rate,
+        "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
+        "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
+    }
+
+
+def _backfill_crypto_sectors(conn) -> int:
+    """Set sector='Cryptocurrency' on crypto securities using the open conn."""
+    rows = conn.execute(
+        "SELECT id, symbol, name, sector FROM securities "
+        "WHERE (is_cash = 0 OR is_cash IS NULL) "
+        "AND (is_benchmark = 0 OR is_benchmark IS NULL)"
+    ).fetchall()
+    changed = 0
+    for r in rows:
+        crypto, strong = classify_crypto(f"{r['name'] or ''} {r['symbol'] or ''}")
+        if not crypto:
+            continue
+        current = r["sector"]
+        # Strong matches override a generic sector; weak matches fill a gap.
+        if (strong or not current) and current != CRYPTO_SECTOR:
+            conn.execute(
+                "UPDATE securities SET sector = ? WHERE id = ?",
+                (CRYPTO_SECTOR, r["id"]),
+            )
+            changed += 1
+    return changed
+
+
+def backfill_crypto_sectors(db_path: Optional[Path] = None) -> int:
+    """Classify crypto-related securities by stored name. Returns rows changed.
+
+    Independent of yfinance so funds that report no sector (e.g. Purpose
+    Solana ETF) are still labelled.
+    """
+    conn = get_connection(db_path)
+    try:
+        changed = _backfill_crypto_sectors(conn)
+        conn.commit()
+        return changed
+    finally:
+        conn.close()
+
+
 def update_securities(
     db_path: Optional[Path] = None,
     delay: float = 0.25,
@@ -259,46 +428,9 @@ def update_securities(
                             if not info.get(key):
                                 info[key] = underlying.get(key)
 
-            # For ETFs, derive sector/industry/country when yfinance leaves them blank.
-            if row["asset_class"] == "etf":
-                if not info.get("sector"):
-                    sector, industry = infer_etf_sector_industry(info)
-                    if sector:
-                        info["sector"] = sector
-                    if industry:
-                        info["industry"] = industry
-                if not info.get("country"):
-                    info["country"] = infer_etf_country(info)
-
-            name = pick_name(info, row["is_cdr"])
-            price = info.get("regularMarketPrice") or info.get("currentPrice")
-            dividend_rate = info.get("dividendRate")
-            raw_yield = info.get("dividendYield")
-            # Yahoo's dividendYield field is inconsistent: sometimes it's a
-            # decimal fraction (0.02 = 2%) and sometimes the percentage value
-            # itself (0.99 = 0.99%). Derive from dividendRate/price when
-            # possible; otherwise treat values > 1 as percentages.
-            if dividend_rate and price:
-                dividend_yield = dividend_rate / price
-            elif raw_yield is not None and raw_yield > 1:
-                dividend_yield = raw_yield / 100.0
-            else:
-                dividend_yield = raw_yield
-            values = {
-                "last_price": price,
-                "last_price_date": date.today().isoformat(),
-                "market_cap": info.get("marketCap"),
-                "sector": info.get("sector"),
-                "industry": info.get("industry"),
-                "country": infer_country(info),
-                "description": name,
-                "trailing_pe": info.get("trailingPE"),
-                "forward_pe": info.get("forwardPE"),
-                "dividend_yield": dividend_yield,
-                "dividend_rate": dividend_rate,
-                "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
-                "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
-            }
+            values = build_values_from_info(info, row["is_cdr"], row["asset_class"])
+            name = values["description"]
+            price = values["last_price"]
 
             sector = values["sector"] or "n/a"
             country = values["country"] or "n/a"
@@ -345,6 +477,7 @@ def update_securities(
             time.sleep(delay)
 
         if not dry_run:
+            _backfill_crypto_sectors(conn)
             conn.commit()
 
         return {"updated": updated, "failed": failed}

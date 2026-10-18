@@ -24,6 +24,13 @@ class ApiReturnTests(unittest.TestCase):
                 self.assertNotIn("mwr", data["returns"][key])
                 self.assertNotIn("naive", data["returns"][key])
 
+    def test_status_includes_price_update_timestamp(self):
+        res = self.client.get("/api/status")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("last_price_update", data)
+        self.assertIn("has_gaps", data)
+
     def test_history_returns_schema(self):
         res = self.client.get("/api/portfolio/history?period=1y&currency=CAD")
         self.assertEqual(res.status_code, 200)

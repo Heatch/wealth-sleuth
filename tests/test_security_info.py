@@ -2,7 +2,13 @@
 
 import unittest
 
-from fetch_security_info import infer_etf_country, infer_etf_sector_industry, resolve_ticker
+from fetch_security_info import (
+    build_values_from_info,
+    classify_crypto,
+    infer_etf_country,
+    infer_etf_sector_industry,
+    resolve_ticker,
+)
 
 
 class TickerResolutionTests(unittest.TestCase):
@@ -50,6 +56,48 @@ class ETFClassificationTests(unittest.TestCase):
         info = {"longName": "BetaPro NASDAQ-100 2x Daily Bull ETF", "exchange": "TOR"}
         sector, industry = infer_etf_sector_industry(info)
         self.assertEqual(sector, "Equities")
+
+
+class CryptoClassificationTests(unittest.TestCase):
+    def test_solana_etf_is_cryptocurrency(self):
+        # yfinance returns no sector for Purpose Solana ETF; infer it.
+        info = {"longName": "Purpose Solana ETF", "exchange": "TOR"}
+        sector, industry = infer_etf_sector_industry(info)
+        self.assertEqual(sector, "Cryptocurrency")
+        self.assertIsNone(industry)
+
+    def test_bitcoin_etf_is_cryptocurrency(self):
+        info = {"longName": "Purpose Bitcoin ETF", "exchange": "TOR"}
+        sector, _ = infer_etf_sector_industry(info)
+        self.assertEqual(sector, "Cryptocurrency")
+
+    def test_strong_name_overrides_generic_sector(self):
+        info = {
+            "longName": "Purpose Solana ETF",
+            "sector": "Financial Services",
+            "regularMarketPrice": 7.82,
+        }
+        values = build_values_from_info(info, 0, "etf")
+        self.assertEqual(values["sector"], "Cryptocurrency")
+
+    def test_missing_sector_filled_for_stock(self):
+        info = {"longName": "Crypto Holdings Inc", "regularMarketPrice": 1.0}
+        values = build_values_from_info(info, 0, "stock")
+        self.assertEqual(values["sector"], "Cryptocurrency")
+
+    def test_non_crypto_sector_untouched(self):
+        info = {
+            "longName": "Shopify Inc.",
+            "sector": "Technology",
+            "regularMarketPrice": 100.0,
+        }
+        values = build_values_from_info(info, 0, "stock")
+        self.assertEqual(values["sector"], "Technology")
+
+    def test_short_tickers_do_not_match_inside_words(self):
+        # SOL must not fire inside "consolidated", ETH inside "together".
+        crypto, _ = classify_crypto("Consolidated Together Corp")
+        self.assertFalse(crypto)
 
 
 class ETFCountryTests(unittest.TestCase):

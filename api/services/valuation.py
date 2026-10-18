@@ -78,6 +78,18 @@ def get_date_range(conn, account_ids=None):
     last_txn = hi["dmax"] if hi else None
     lp = conn.execute("SELECT MAX(date) AS dmax FROM price_history").fetchone()
     last_price = lp["dmax"] if lp else None
+    live_date = None
+    try:
+        live = conn.execute(
+            "SELECT MAX(last_price_date) AS dmax FROM securities "
+            "WHERE last_price IS NOT NULL AND (is_cash = 0 OR is_cash IS NULL)"
+        ).fetchone()
+        live_date = live["dmax"] if live else None
+    except sqlite3.OperationalError:
+        # Older/partial schemas (e.g. unit-test fixtures) lack live prices.
+        live_date = None
+    if live_date and (not last_price or live_date > last_price):
+        last_price = live_date
     last_date = last_txn
     if last_price and (not last_date or last_price > last_date):
         last_date = last_price
@@ -85,11 +97,37 @@ def get_date_range(conn, account_ids=None):
 
 
 def load_price_map(conn):
-    """Map of (security_id, date) -> close_price."""
+    """Map of (security_id, date) -> close_price.
+
+    The latest live price (securities.last_price) is overlaid as the most
+    recent point so the valuation series reflects the same prices as the
+    holdings table. Without this, the summary/chart stayed pinned to the
+    last daily close while the table showed live prices.
+    """
     price_map = {}
+    max_date = {}
     q = "SELECT security_id, date, close_price FROM price_history"
     for r in conn.execute(q).fetchall():
-        price_map[(r["security_id"], r["date"])] = float(r["close_price"])
+        sid, d = r["security_id"], r["date"]
+        price_map[(sid, d)] = float(r["close_price"])
+        if d > max_date.get(sid, ""):
+            max_date[sid] = d
+
+    live_q = (
+        "SELECT id, last_price, last_price_date FROM securities "
+        "WHERE last_price IS NOT NULL AND last_price_date IS NOT NULL "
+        "AND (is_cash = 0 OR is_cash IS NULL)"
+    )
+    try:
+        live_rows = conn.execute(live_q).fetchall()
+    except sqlite3.OperationalError:
+        # Older/partial schemas (e.g. unit-test fixtures) lack live prices.
+        live_rows = []
+    for r in live_rows:
+        sid, d = r["id"], r["last_price_date"]
+        # Only overlay when it is at least as recent as stored history.
+        if d >= max_date.get(sid, ""):
+            price_map[(sid, d)] = float(r["last_price"])
     return price_map
 
 
@@ -466,8 +504,9 @@ def daily_portfolio_values_cached(currency="CAD", account_ids=None, security_ids
 
     acct_key = tuple(sorted(account_ids)) if account_ids else "all"
     sec_key = tuple(sorted(security_ids)) if security_ids else "all"
-    # v6 bump: security transfers now count as cash flows when accounts are filtered.
-    key = f"valuation_v6_{currency}_{acct_key}_{sec_key}"
+    # v7 bump: live prices are overlaid on the price map, so the series
+    # now ends at the live-price date rather than the last daily close.
+    key = f"valuation_v7_{currency}_{acct_key}_{sec_key}"
     cached = cache.get(key)
     if cached is not None:
         return cached

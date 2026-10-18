@@ -1,5 +1,5 @@
-﻿import { useEffect, useMemo, useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
 import {
   fetchAccounts,
@@ -24,6 +24,7 @@ import StatusBanner from "./components/StatusBanner";
 import TFSABanner from "./components/TFSABanner";
 
 export default function App() {
+  const queryClient = useQueryClient();
   const [currency, setCurrency] = useState<Currency>("CAD");
   const [period, setPeriod] = useState<Period>("1y");
   const [method, setMethod] = useState<ReturnMethod>("twr");
@@ -119,6 +120,8 @@ export default function App() {
   const holdingsQ = useQuery({
     queryKey: ["holdings", currency, sort, order, selectedAccounts],
     queryFn: () => fetchHoldings(currency, sort, order, selectedAccounts ?? undefined),
+    // Safety net: pick up prices even if the status signal is missed.
+    refetchInterval: 60_000,
   });
 
   const filteredHoldings = useMemo(() => {
@@ -159,6 +162,38 @@ export default function App() {
     queryFn: fetchStatus,
     refetchInterval: 5000,
   });
+
+  // Refresh the DB-backed views when the background live-price loop
+  // publishes a new timestamp. The status poll (5s) is the trigger, so we
+  // don't constantly re-fetch holdings/summary/history.
+  const lastPriceUpdate = statusQ.data?.last_price_update ?? null;
+  const prevPriceUpdate = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      prevPriceUpdate.current !== null &&
+      lastPriceUpdate !== prevPriceUpdate.current
+    ) {
+      queryClient.invalidateQueries({ queryKey: ["holdings"] });
+      queryClient.invalidateQueries({ queryKey: ["summary"] });
+      queryClient.invalidateQueries({ queryKey: ["history"] });
+      queryClient.invalidateQueries({ queryKey: ["security"] });
+      queryClient.invalidateQueries({ queryKey: ["security-history"] });
+    }
+    prevPriceUpdate.current = lastPriceUpdate;
+  }, [lastPriceUpdate, queryClient]);
+
+  // When the startup/background price-history fetch finishes (gaps go from
+  // present to resolved), refresh the valuation series and charts.
+  const hasGaps = statusQ.data?.has_gaps ?? false;
+  const prevHasGaps = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (prevHasGaps.current === true && hasGaps === false) {
+      queryClient.invalidateQueries({ queryKey: ["holdings"] });
+      queryClient.invalidateQueries({ queryKey: ["summary"] });
+      queryClient.invalidateQueries({ queryKey: ["history"] });
+    }
+    prevHasGaps.current = hasGaps;
+  }, [hasGaps, queryClient]);
 
   const benchmarksQ = useQuery({
     queryKey: ["benchmarks"],
