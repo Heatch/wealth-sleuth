@@ -4,9 +4,43 @@
 
 Wealth Sleuth imports transaction exports from multiple brokerages, normalizes them into a single SQLite model, calculates holdings and performance, enriches securities with market data, and presents the results in a focused React dashboard.
 
-![Wealth Sleuth dashboard preview](docs/wealth-sleuth-preview.png)
+## Product preview
 
-> The preview uses popular example securities and intentionally redacts exact dollar amounts. It is not a representation of any person's portfolio.
+The screenshots below are sanitized demonstrations, not a representation of
+any person's portfolio. Exact currency amounts are redacted; the examples use
+recognizable public securities so the product capabilities are easy to scan.
+
+### Portfolio dashboard
+
+The main view combines portfolio history, return controls, holdings, filters,
+allocation, and all-time performance records.
+
+![Portfolio dashboard overview](docs/dashboard-overview.png)
+
+### Holdings and allocation
+
+The holdings table supports sortable prices, valuation, gains, market cap,
+P/E, dividend yield, weights, and account metadata. Allocation views show
+sector and country concentration with compact donut charts.
+
+![Holdings table preview](docs/wealth-sleuth-preview.png)
+
+![Allocation charts](docs/allocation-charts.png)
+
+### TFSA contribution room
+
+When TFSA accounts are selected, the dashboard surfaces lifetime
+contributions, available room, remaining room, percentage used, and an
+editable birth year.
+
+![TFSA contribution room](docs/tfsa-contribution-room.png)
+
+### Inline security research
+
+Selecting a holding opens an inline company card with fundamentals, a price
+history chart, timeframe controls, and position-level return context.
+
+![Company detail card](docs/company-detail-card.png)
 
 ## Why this project exists
 
