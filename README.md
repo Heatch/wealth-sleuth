@@ -10,13 +10,6 @@ The screenshots below are sanitized demonstrations, not a representation of
 any person's portfolio. Exact currency amounts are redacted; the examples use
 recognizable public securities so the product capabilities are easy to scan.
 
-### Portfolio dashboard
-
-The main view combines portfolio history, return controls, holdings, filters,
-allocation, and all-time performance records.
-
-![Portfolio dashboard overview](docs/dashboard-overview.png)
-
 ### Holdings and allocation
 
 The holdings table supports sortable prices, valuation, gains, market cap,
